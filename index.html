@@ -47,6 +47,7 @@
             </div>
           </div>
           <img class="pet-img hidden" id="pet-img" alt="" draggable="false" />
+          <div class="pet-vector hidden" id="pet-vector" aria-hidden="true"></div>
           <div class="pet-spark" id="pet-spark" aria-hidden="true"></div>
         </div>
         <div id="attention-dot" class="attention-dot hidden"></div>
@@ -155,6 +156,28 @@
           </div>
           <p class="hint" id="adapter-hint"></p>
           <p class="hint muted" id="drag-hint"></p>
+        </section>
+
+        <section class="insp-section">
+          <h3 class="insp-h3" id="mood-title">心情语</h3>
+          <p class="hint muted" id="mood-hint"></p>
+          <div class="mood-group">
+            <label class="mood-label" id="mood-working-label" for="mood-working"></label>
+            <textarea id="mood-working" class="mood-area" rows="4" spellcheck="false"></textarea>
+          </div>
+          <div class="mood-group">
+            <label class="mood-label" id="mood-success-label" for="mood-success"></label>
+            <textarea id="mood-success" class="mood-area" rows="4" spellcheck="false"></textarea>
+          </div>
+          <div class="mood-group">
+            <label class="mood-label" id="mood-idle-label" for="mood-idle"></label>
+            <textarea id="mood-idle" class="mood-area" rows="4" spellcheck="false"></textarea>
+          </div>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="mood-save"></button>
+            <button type="button" class="btn" id="mood-reset"></button>
+          </div>
+          <p class="hint" id="mood-toast"></p>
         </section>
       </div>
     </div>

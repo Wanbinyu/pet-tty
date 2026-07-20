@@ -1,4 +1,5 @@
 import type { SkinMeta } from "./types";
+import { VECTOR_CHARACTERS } from "./vector";
 
 /** Built-in skins (no external assets). */
 export const BUILTIN_SKINS: SkinMeta[] = [
@@ -34,6 +35,15 @@ export const BUILTIN_SKINS: SkinMeta[] = [
     builtin: true,
     theme: "ghost",
   },
+  // Original vector characters (SVG + CSS, hand-written, no external art).
+  ...VECTOR_CHARACTERS.map((vc) => ({
+    id: `vec-${vc.id}`,
+    nameEn: vc.nameEn,
+    nameZh: vc.nameZh,
+    kind: "vector" as const,
+    builtin: true,
+    vectorId: vc.id,
+  })),
 ];
 
 export const DEFAULT_SKIN_ID = "ember";

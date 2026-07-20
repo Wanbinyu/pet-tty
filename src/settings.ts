@@ -10,6 +10,10 @@ export interface PetSettings {
   windowY: number | null;
   /** logical scale 1 | 1.25 | 1.5 */
   scale: number;
+  /** User-edited mood lines (null = use i18n defaults). One entry per line. */
+  workingMessages?: string[] | null;
+  completionMessages?: string[] | null;
+  idleMessages?: string[] | null;
 }
 
 const defaults: PetSettings = {

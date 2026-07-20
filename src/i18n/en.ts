@@ -67,6 +67,18 @@ export type Dict = {
     qualityStandard: string;
     qualityChunky: string;
     pixelWorking: string;
+    completionMessages: string[];
+    workingMessages: string[];
+    idleMessages: string[];
+    moodTitle: string;
+    moodHint: string;
+    moodWorking: string;
+    moodSuccess: string;
+    moodIdle: string;
+    moodSave: string;
+    moodReset: string;
+    moodSaved: string;
+    moodResetDone: string;
   };
   petMood: Record<
     | "idle"
@@ -124,17 +136,17 @@ export const en: Dict = {
     dragHint: "Drag · Right-click · Double-click for more",
     closeInspector: "Back to pet",
     importImage: "Import image as-is…",
-    importPixel: "Make pixel doll from image…",
+    importPixel: "Create detailed pixel character…",
     deleteSkin: "Delete current custom skin",
     deleteSkinHint: "Right-click a custom skin → Delete",
     deleteConfirm: "Delete this skin",
     cancel: "Cancel",
     dollModeHint:
-      "Builds a chibi pixel character from the photo’s colors & proportions (not a pixelated photo).",
+      "Preserves the photo's hairstyle, clothing, pose and silhouette, then applies pixel-art palette, outline and detail treatment.",
     stageLoad: "Loading image",
     stageIsolate: "Finding subject (may take a while)",
-    stageAnalyze: "Reading colors & proportions",
-    stageDraw: "Drawing pixel doll",
+    stageAnalyze: "Extracting silhouette & palette",
+    stageDraw: "Adding pixel outline & details",
     stageDone: "Done",
     deleted: "Custom skin deleted",
     cannotDeleteBuiltin: "Built-in skins cannot be deleted",
@@ -146,13 +158,48 @@ export const en: Dict = {
     skinActive: "Active",
     importOk: "Skin imported",
     importFail: "Import failed (file too large?)",
-    pixelOk: "Pixel skin saved",
-    subjectOnly: "Use subject cutout for better colors",
-    quality: "Doll detail",
+    pixelOk: "Detailed pixel character saved",
+    subjectOnly: "Detect person and remove background (recommended)",
+    quality: "Character detail",
     qualityFine: "Fine",
     qualityStandard: "Standard",
     qualityChunky: "Chunky",
     pixelWorking: "Making pixel doll…",
+    completionMessages: [
+      "Task done ✓ praise me, master?",
+      "All done for you~ pat pat",
+      "Finished a little project, master's amazing",
+      "Master's even better now!",
+      "That's a wrap~ time to rest",
+      "Round complete, master's the best",
+    ],
+    workingMessages: [
+      "Master, rest up - I'll whip Claude into shape~",
+      "Great idea, master - on it!",
+      "Leave it to me, master can relax",
+      "Work harder, Claude! Master's watching",
+      "Guarding master's code...",
+      "Whip ready - go Claude go!",
+      "Master's wish is my command~",
+    ],
+    idleMessages: [
+      "Master~ I'm right here waiting",
+      "Standing by... your call, master",
+      "What shall we do, master?",
+      "You can poke me, master~",
+      "Master worked hard, take a break?",
+      "Watching Claude for you, master",
+      "Master, master, look at me~",
+    ],
+    moodTitle: "Mood lines",
+    moodHint: "One per line · empty field = use defaults",
+    moodWorking: "While working",
+    moodSuccess: "On completion",
+    moodIdle: "While idle",
+    moodSave: "Save",
+    moodReset: "Reset to defaults",
+    moodSaved: "Saved",
+    moodResetDone: "Reset to defaults",
   },
   petMood: {
     idle: "Ready",

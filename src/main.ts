@@ -21,6 +21,7 @@ import {
   setActiveSkinId,
 } from "./skins/store";
 import { applySkinToDom } from "./skins/render";
+import { getVectorCharacter } from "./skins/vector";
 import { fileToDataUrl, normalizeImport, type PixelQuality } from "./skins/pixelize";
 import { makePixelDollFromImage } from "./skins/pixel-doll";
 import { hideWorkProgress, setWorkProgress } from "./skins/progress";
@@ -49,12 +50,20 @@ let pixelQuality: PixelQuality = "fine";
 /** Last live source label e.g. claude-code / grok */
 let liveSource: string | null = null;
 let liveAt = 0;
+/** Timestamp of the last "Claude connected" (SessionStart / presence-just
+ *  -connected) signal. Drives the short connection grace in updateConnPanel -
+ *  distinct from `liveAt` (updated on every event) so that the Stop/SessionEnd
+ *  event fired when Claude CLOSES cannot keep the indicator "connected". */
+let liveConnectAt = 0;
 
 /** Connection strip state (process presence + activity) */
 type ConnUi = "offline" | "online" | "busy" | "closed";
 let connUi: ConnUi = "offline";
 let claudeConnected = false;
 let claudeLiveCount = 0;
+/** Consecutive false presence readings - used to debounce disconnects so a
+ *  single tasklist hiccup can't flash "对话已关闭" mid-conversation. */
+let presenceFalseStreak = 0;
 let toastTimerConn: ReturnType<typeof setTimeout> | null = null;
 
 interface ClaudePresence {
@@ -88,24 +97,34 @@ function updateConnPanel() {
     "conn-closed",
   );
 
+  // `success` is terminal - it fires on Stop, i.e. when Claude finishes a reply
+  // or CLOSES. Treating it as "working" made the pet show 执行中 for 120s after
+  // Claude stopped/closed. Keep error/waiting_user: they still need attention.
   const busyStates = new Set([
     "thinking",
     "tool_call",
     "editing",
     "running_tests",
     "waiting_user",
-    "success",
     "error",
   ]);
-  // Live bridge events count even without a Claude process (manual test / hooks)
+  // Recent BUSY activity -> "working" (also covers `pettty test` with no Claude
+  // process). success no longer counts (terminal).
   const activityBusy =
     latest != null &&
     busyStates.has(latest.state) &&
     liveSource != null &&
     Date.now() - liveAt < 120_000;
+  // "Connected" follows actual Claude presence. A "Claude connected" event
+  // (SessionStart, or the soft event injected when presence first detects
+  // Claude) also counts for a SHORT grace so the indicator lights up the
+  // instant Claude opens - before the ~2s presence poll catches up.
+  // A 5-minute window must NOT be used: the Stop/SessionEnd event fires exactly
+  // when Claude CLOSES, so a long grace made "closing Claude" look "connected"
+  // for minutes and survive a reopen.
   const hasLiveSignal =
     claudeConnected ||
-    (liveSource != null && Date.now() - liveAt < 300_000);
+    (liveSource != null && Date.now() - liveConnectAt < 30_000);
 
   if (activityBusy) {
     connUi = "busy";
@@ -151,10 +170,26 @@ function updateConnPanel() {
 
 function onClaudePresence(p: ClaudePresence) {
   const was = claudeConnected;
-  claudeConnected = p.connected;
+  // Debounce disconnects: a single false reading (tasklist hiccup) must NOT
+  // drop us to "closed" mid-conversation or flash "对话已关闭". Require 2
+  // consecutive false before treating Claude as gone.
+  if (p.connected) {
+    presenceFalseStreak = 0;
+    if (!claudeConnected) claudeConnected = true;
+  } else {
+    presenceFalseStreak += 1;
+    if (presenceFalseStreak >= 2 && claudeConnected) {
+      claudeConnected = false;
+    }
+  }
   claudeLiveCount = p.liveCount ?? p.sessions?.length ?? 0;
 
-  if (p.justConnected || (!was && p.connected)) {
+  // Fire connect/disconnect side effects only on debounced transitions - not
+  // on every snapshot poll (which would re-fire toasts and overwrite `latest`).
+  const justConnected = !was && claudeConnected;
+  const justDisconnected = was && !claudeConnected;
+
+  if (justConnected) {
     showConnToast(
       getLocale() === "zh-CN" ? "已检测到 Claude" : "Claude detected",
     );
@@ -173,11 +208,12 @@ function onClaudePresence(p: ClaudePresence) {
       stickyMs: 0,
     });
   }
-  if (p.justDisconnected || (was && !p.connected)) {
+  if (justDisconnected) {
     showConnToast(
       getLocale() === "zh-CN" ? "对话已关闭" : "Session closed",
     );
-    liveSource = liveSource; // keep last
+    // liveSource is intentionally kept (not cleared) so the adapter hint still
+    // shows the last source after disconnect.
     if (latest && latest.source === "claude-code") {
       latest = {
         ...latest,
@@ -386,6 +422,14 @@ function renderSkinLists() {
       img.alt = "";
       if (skin.pixelated) img.style.imageRendering = "pixelated";
       preview.appendChild(img);
+    } else if (skin.kind === "vector") {
+      const vc = getVectorCharacter(skin.vectorId ?? "");
+      if (vc) {
+        preview.classList.add("vector-preview");
+        preview.innerHTML = vc.svg;
+      } else {
+        preview.textContent = "◉";
+      }
     } else {
       preview.classList.add(`swatch-${skin.theme ?? "ember"}`);
       preview.textContent =
@@ -454,8 +498,14 @@ function applyI18n() {
   $("btn-import").textContent = d.ui.importImage;
   $("btn-import-pixel").textContent = d.ui.importPixel;
   $("btn-delete-skin").textContent = d.ui.deleteSkin;
-  $("label-pixel-size").textContent = d.ui.pixelSize;
-  $("label-pixel-colors").textContent = d.ui.pixelColors;
+  // pixel-size / pixel-colors inputs were removed from index.html (the doll
+  // importer uses the fine/standard/chunky quality presets + opt-subject
+  // instead). Guard these: a missing element used to throw here, aborting
+  // boot() before it could wire the Claude presence listener.
+  const lblSize = document.getElementById("label-pixel-size");
+  if (lblSize) lblSize.textContent = d.ui.pixelSize;
+  const lblColors = document.getElementById("label-pixel-colors");
+  if (lblColors) lblColors.textContent = d.ui.pixelColors;
   $("label-subject-only").textContent = d.ui.subjectOnly;
   $("label-quality").textContent = d.ui.quality;
   $("q-fine").textContent = d.ui.qualityFine;
@@ -474,6 +524,13 @@ function applyI18n() {
     );
   });
   $("drag-hint").textContent = d.ui.dragHint;
+  $("mood-title").textContent = d.ui.moodTitle;
+  $("mood-hint").textContent = d.ui.moodHint;
+  $("mood-working-label").textContent = d.ui.moodWorking;
+  $("mood-success-label").textContent = d.ui.moodSuccess;
+  $("mood-idle-label").textContent = d.ui.moodIdle;
+  $("mood-save").textContent = d.ui.moodSave;
+  $("mood-reset").textContent = d.ui.moodReset;
   let liveLine = getClaudeAdapterStatus().message;
   if (liveSource && Date.now() - liveAt < 300_000) {
     const ago = Math.round((Date.now() - liveAt) / 1000);
@@ -490,12 +547,14 @@ function applyI18n() {
   }
   $("adapter-hint").textContent = liveLine;
 
-  $("pixel-size-val").textContent = String(
-    ($("pixel-size") as unknown as HTMLInputElement).value,
-  );
-  $("pixel-colors-val").textContent = String(
-    ($("pixel-colors") as unknown as HTMLInputElement).value,
-  );
+  // Vestigial pixel-size / pixel-colors inputs (removed from index.html) -
+  // guard so they can't throw.
+  const pxSize = document.getElementById("pixel-size") as HTMLInputElement | null;
+  const pxSizeVal = document.getElementById("pixel-size-val");
+  if (pxSize && pxSizeVal) pxSizeVal.textContent = String(pxSize.value);
+  const pxColors = document.getElementById("pixel-colors") as HTMLInputElement | null;
+  const pxColorsVal = document.getElementById("pixel-colors-val");
+  if (pxColors && pxColorsVal) pxColorsVal.textContent = String(pxColors.value);
 
   if (latest) renderEvent(latest);
   else {
@@ -513,15 +572,116 @@ function stateLabel(state: AgentState): string {
   return t().state[state] ?? state;
 }
 
-function shouldShowBubbleFor(state: AgentState | undefined): boolean {
-  if (!showBubble || !state) return false;
-  if (state === "idle") return false;
-  return true;
+/** User-editable mood-line pools (null = use i18n defaults). */
+let _workingMsgs: string[] | null = null;
+let _completionMsgs: string[] | null = null;
+let _idleMsgs: string[] | null = null;
+
+function workingMessages(): string[] {
+  return _workingMsgs ?? t().ui.workingMessages;
+}
+function completionMessages(): string[] {
+  return _completionMsgs ?? t().ui.completionMessages;
+}
+function idleMessages(): string[] {
+  return _idleMsgs ?? t().ui.idleMessages;
+}
+
+const WORKING_STATES = new Set<AgentState>([
+  "thinking",
+  "tool_call",
+  "editing",
+  "running_tests",
+]);
+
+/** Stable-per-event pick from a pool, seeded by `seed` (event ts) so re-renders
+ *  don't flicker the chosen line. */
+function pickSeeded(pool: string[], seed: string): string {
+  if (!pool || pool.length === 0) return "";
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+  return pool[Math.abs(h) % pool.length]!;
+}
+
+function completionMessage(seed: string): string {
+  return pickSeeded(completionMessages(), seed);
+}
+function workingMessage(seed: string): string {
+  return pickSeeded(workingMessages(), seed);
+}
+
+/** Idle lines rotate over time (not per-event) so the standby bubble feels
+ *  alive without flickering on every re-render. */
+let _idleIdx = 0;
+let _currentIdleMsg = "";
+function pickNextIdle(): string {
+  const pool = idleMessages();
+  if (pool.length === 0) {
+    _currentIdleMsg = "";
+    return "";
+  }
+  _idleIdx = (_idleIdx + 1) % pool.length;
+  _currentIdleMsg = pool[_idleIdx] ?? "";
+  return _currentIdleMsg;
+}
+function idleMessageForBubble(): string {
+  if (!_currentIdleMsg) pickNextIdle();
+  return _currentIdleMsg;
+}
+
+/** Display title for an event - success / working show a cute mood line
+ *  instead of the raw "Reply finished" / "Editing X". */
+function displayTitle(event: AgentEvent): string {
+  if (event.state === "success") {
+    const cm = completionMessage(event.ts);
+    if (cm) return cm;
+  } else if (WORKING_STATES.has(event.state)) {
+    const wm = workingMessage(event.ts);
+    if (wm) return wm;
+  }
+  return event.title || stateLabel(event.state);
 }
 
 function updateBubble(event: AgentEvent | null) {
   const bubble = $("bubble");
-  if (!event || !shouldShowBubbleFor(event.state)) {
+  if (!event || !showBubble) {
+    bubble.classList.add("hidden");
+    return;
+  }
+
+  // Per-state title/detail/visibility. Mood lines (working / completion /
+  // idle) replace the raw title; the technical info drops to the detail line so
+  // the user still sees what Claude is doing.
+  let title = "";
+  let detail = "";
+  let show: boolean;
+  if (event.state === "success") {
+    title = displayTitle(event);
+    detail = event.detail ?? "";
+    show = true;
+  } else if (WORKING_STATES.has(event.state)) {
+    title = workingMessage(event.ts) || event.title || stateLabel(event.state);
+    detail = event.detail || event.title || "";
+    show = true;
+    _currentIdleMsg = ""; // leaving standby - next idle picks a fresh line
+  } else if (event.state === "idle") {
+    if (claudeConnected) {
+      // Standby: show a rotating cute idle line.
+      title = idleMessageForBubble();
+      detail = "";
+      show = true;
+    } else {
+      show = false; // Claude closed -> hide
+    }
+  } else {
+    // waiting_user, error
+    title = event.title || stateLabel(event.state);
+    detail = event.detail ?? "";
+    show = true;
+    _currentIdleMsg = "";
+  }
+
+  if (!show) {
     bubble.classList.add("hidden");
     return;
   }
@@ -536,8 +696,8 @@ function updateBubble(event: AgentEvent | null) {
       : label;
   }
   $("bubble-state").textContent = stateLabel(event.state);
-  $("bubble-title").textContent = event.title || stateLabel(event.state);
-  $("bubble-detail").textContent = event.detail ?? "";
+  $("bubble-title").textContent = title;
+  $("bubble-detail").textContent = detail;
 
   const wrap = $("bubble-progress-wrap");
   const bar = $("bubble-progress-bar");
@@ -557,9 +717,10 @@ function updateBubble(event: AgentEvent | null) {
 
   if (idleHideTimer) clearTimeout(idleHideTimer);
   if (event.state === "success") {
+    // Completion line lingers ~5s so the user can read it.
     idleHideTimer = setTimeout(() => {
       if (latest?.state === "success") bubble.classList.add("hidden");
-    }, 2800);
+    }, 5000);
   }
 }
 
@@ -771,6 +932,14 @@ function ingestLiveEvent(raw: unknown) {
   }
   liveSource = event.source;
   liveAt = Date.now();
+  // SessionStart (and the soft event injected by onClaudePresence when presence
+  // first detects Claude) both arrive titled "Claude connected" - count that as
+  // a connection signal for the short grace in updateConnPanel, so opening
+  // Claude lights the indicator instantly. Stop / SessionEnd do NOT match, so
+  // closing Claude lets the indicator drop to "closed" right away.
+  if (event.title.toLowerCase().includes("claude connected")) {
+    liveConnectAt = Date.now();
+  }
 
   // Track ring seq if present
   if (raw && typeof raw === "object") {
@@ -868,7 +1037,7 @@ function renderEvent(event: AgentEvent) {
   const pill = $("state-pill");
   pill.textContent = stateLabel(event.state);
   pill.dataset.state = event.state;
-  $("status-title").textContent = event.title || stateLabel(event.state);
+  $("status-title").textContent = displayTitle(event);
   $("status-detail").textContent = event.detail ?? dict.petMood[event.state];
   $("source-label").textContent =
     event.source === "claude-code"
@@ -932,6 +1101,7 @@ async function openInspector() {
   $("shell").classList.add("hidden");
   await resizeTo("inspector");
   applyI18n();
+  populateMood();
 }
 
 async function closeInspector() {
@@ -1006,7 +1176,7 @@ async function importImage(asPixel: boolean) {
           .checked;
         // Doll width by quality preset
         const width =
-          pixelQuality === "fine" ? 40 : pixelQuality === "standard" ? 32 : 24;
+          pixelQuality === "fine" ? 64 : pixelQuality === "standard" ? 44 : 28;
         dataUrl = await makePixelDollFromImage(dataUrl, {
           isolate: subjectOnly,
           width,
@@ -1042,6 +1212,68 @@ async function importImage(asPixel: boolean) {
     }
   };
   input.click();
+}
+
+function populateMood() {
+  const set = (id: string, arr: string[]) => {
+    const el = $(id) as unknown as HTMLTextAreaElement | null;
+    if (el) el.value = arr.join("\n");
+  };
+  set("mood-working", workingMessages());
+  set("mood-success", completionMessages());
+  set("mood-idle", idleMessages());
+}
+
+function parseMoodArea(id: string): string[] {
+  const el = $(id) as unknown as HTMLTextAreaElement | null;
+  if (!el) return [];
+  return el.value
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
+function flashMoodToast(msg: string) {
+  const toast = $("mood-toast");
+  if (!toast) return;
+  toast.textContent = msg;
+  setTimeout(() => {
+    if (toast) toast.textContent = "";
+  }, 2000);
+}
+
+function saveMood() {
+  const w = parseMoodArea("mood-working");
+  const c = parseMoodArea("mood-success");
+  const i = parseMoodArea("mood-idle");
+  const next = saveSettings({
+    workingMessages: w.length ? w : null,
+    completionMessages: c.length ? c : null,
+    idleMessages: i.length ? i : null,
+  });
+  _workingMsgs = next.workingMessages ?? null;
+  _completionMsgs = next.completionMessages ?? null;
+  _idleMsgs = next.idleMessages ?? null;
+  _currentIdleMsg = ""; // force a fresh idle pick next standby
+  flashMoodToast(t().ui.moodSaved);
+  if (latest) renderEvent(latest);
+  else applyI18n();
+}
+
+function resetMood() {
+  const next = saveSettings({
+    workingMessages: null,
+    completionMessages: null,
+    idleMessages: null,
+  });
+  _workingMsgs = next.workingMessages ?? null;
+  _completionMsgs = next.completionMessages ?? null;
+  _idleMsgs = next.idleMessages ?? null;
+  _currentIdleMsg = "";
+  populateMood();
+  flashMoodToast(t().ui.moodResetDone);
+  if (latest) renderEvent(latest);
+  else applyI18n();
 }
 
 function wireUi() {
@@ -1226,12 +1458,18 @@ function wireUi() {
     });
   });
 
+  $("mood-save").addEventListener("click", () => saveMood());
+  $("mood-reset").addEventListener("click", () => resetMood());
+
   petHit.addEventListener("dblclick", () => void openInspector());
 }
 
 async function boot() {
   const settings = loadSettings();
   showBubble = settings.showBubble !== false;
+  _workingMsgs = settings.workingMessages ?? null;
+  _completionMsgs = settings.completionMessages ?? null;
+  _idleMsgs = settings.idleMessages ?? null;
 
   if (settings.locale === "en" || settings.locale === "zh-CN") {
     setLocale(settings.locale);
@@ -1245,18 +1483,35 @@ async function boot() {
   // Soft idle shell — real events replace this immediately
   player.load(buildDemoEvents());
   player.onEvent(renderEvent);
-  refreshSkin();
-  updateConnPanel();
+  // DOM setup is wrapped: a missing/typo'd DOM id must not abort boot and
+  // leave event polling + presence listeners unwired (the safety net only logs).
+  try {
+    refreshSkin();
+    updateConnPanel();
 
-  wireUi();
-  applyQualityPreset("fine");
-  applyI18n();
+    wireUi();
+    applyQualityPreset("fine");
+    applyI18n();
+  } catch (e) {
+    uiLog(`boot: DOM setup partial: ${String((e as Error)?.message ?? e)}`);
+    console.error("[pettty] boot DOM setup", e);
+  }
 
   // —— CRITICAL: wire events BEFORE any awaited window ops ——
   // (await hang would leave poll never starting)
   setInterval(() => void pollAgentEvents(), 250);
   void pollAgentEvents();
   uiLog("boot: poll started");
+
+  // Rotate the standby idle line every ~10s so the bubble feels alive.
+  setInterval(() => {
+    if (latest && latest.state === "idle" && claudeConnected && showBubble) {
+      const bubble = $("bubble");
+      if (!bubble.classList.contains("hidden")) {
+        $("bubble-title").textContent = pickNextIdle();
+      }
+    }
+  }, 10000);
 
   if (isTauri()) {
     setInterval(() => void persistPosition(), 2000);
@@ -1315,4 +1570,9 @@ async function boot() {
   }
 }
 
-boot();
+// Safety net: if boot ever throws again (e.g. another missing DOM id), surface
+// it in the Rust log instead of silently leaving the presence listener unwired.
+boot().catch((e) => {
+  console.error("[pettty] boot failed", e);
+  uiLog(`BOOT THREW: ${String((e as Error)?.stack ?? e)}`);
+});

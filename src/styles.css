@@ -167,8 +167,11 @@ body {
   gap: 4px;
   width: 100%;
   max-width: 176px;
+  max-height: 132px;
   margin-bottom: 6px;
-  pointer-events: none;
+  overflow-y: auto;
+  pointer-events: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .session-card {
@@ -238,8 +241,10 @@ body {
   color: var(--muted);
   line-height: 1.3;
   word-break: break-word;
-  max-height: 2.6em;
-  overflow: hidden;
+  max-height: 4.8em;
+  overflow-y: auto;
+  pointer-events: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .bubble-progress {
@@ -318,12 +323,14 @@ body {
 }
 
 .pet-img {
-  width: 88px;
-  height: 88px;
+  width: 96px;
+  height: 100px;
   object-fit: contain;
   z-index: 2;
   pointer-events: none;
   -webkit-user-drag: none;
+  transform-origin: 50% 92%;
+  filter: drop-shadow(0 5px 5px rgba(0, 0, 0, 0.24));
 }
 
 .pet-img.pixelated {
@@ -990,6 +997,19 @@ body.mode-inspector {
   image-rendering: pixelated;
 }
 
+.skin-card-preview.vector-preview {
+  background:
+    radial-gradient(circle at 50% 82%, rgba(255, 255, 255, 0.08), transparent 48%),
+    rgba(0, 0, 0, 0.2);
+}
+
+.skin-card-preview.vector-preview svg {
+  width: 46px;
+  height: 46px;
+  overflow: visible;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.28));
+}
+
 .skin-card-preview.swatch-ember {
   background: linear-gradient(165deg, #f3b692, #d97757);
 }
@@ -1140,3 +1160,260 @@ body.mode-inspector {
   padding: 2px 8px 6px;
   word-break: break-word;
 }
+
+.mood-group {
+  margin-top: 8px;
+}
+
+.mood-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-2);
+  margin-bottom: 3px;
+}
+
+.mood-area {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  resize: vertical;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.4;
+  font-family: inherit;
+  word-break: break-word;
+}
+
+.mood-area:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ============ Vector characters (original SVG/CSS pets) ============ */
+.pet-vector {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+}
+.pet-vector svg {
+  width: 104%;
+  height: 104%;
+  overflow: visible;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.22));
+}
+
+/* Imported characters retain their detailed silhouette and still respond to
+   the same agent states as native pets. */
+#pet[data-skin-kind="image"] .pet-img {
+  animation: image-idle 3s ease-in-out infinite;
+}
+#pet.pet--thinking[data-skin-kind="image"] .pet-img {
+  animation: image-think 1.8s ease-in-out infinite;
+}
+#pet.pet--editing[data-skin-kind="image"] .pet-img,
+#pet.pet--tool[data-skin-kind="image"] .pet-img,
+#pet.pet--test[data-skin-kind="image"] .pet-img {
+  animation: image-work .72s steps(2, end) infinite;
+}
+#pet.pet--wait[data-skin-kind="image"] .pet-img {
+  animation: image-wait .5s ease-in-out infinite;
+  filter: drop-shadow(0 0 7px rgba(240, 193, 75, .7));
+}
+#pet.pet--success[data-skin-kind="image"] .pet-img {
+  animation: image-success .7s ease-in-out 2;
+}
+#pet.pet--error[data-skin-kind="image"] .pet-img {
+  animation: image-error .34s linear 3;
+}
+
+@keyframes image-idle {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-2px) scaleY(1.015); }
+}
+@keyframes image-think {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50% { transform: translateY(-3px) rotate(2deg); }
+}
+@keyframes image-work {
+  50% { transform: translateY(1px) rotate(.7deg); }
+}
+@keyframes image-wait {
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+@keyframes image-success {
+  45% { transform: translateY(-8px) scale(1.04); }
+  70% { transform: translateY(0) scale(.98, 1.03); }
+}
+@keyframes image-error {
+  25% { transform: translateX(-3px) rotate(-2deg); }
+  75% { transform: translateX(3px) rotate(2deg); }
+}
+
+/* Whole-character animation per state (shared across vector chars). */
+#pet[data-skin-kind="vector"] .pet-vector {
+  animation: vc-bob 2.8s ease-in-out infinite;
+}
+#pet.pet--thinking[data-skin-kind="vector"] .pet-vector {
+  animation: vc-think 2.2s ease-in-out infinite;
+}
+#pet.pet--success[data-skin-kind="vector"] .pet-vector {
+  animation: vc-hop 0.55s ease-in-out infinite;
+}
+#pet.pet--error[data-skin-kind="vector"] .pet-vector {
+  animation: vc-shake 0.35s linear infinite;
+}
+#pet.pet--editing[data-skin-kind="vector"] .pet-vector,
+#pet.pet--tool[data-skin-kind="vector"] .pet-vector,
+#pet.pet--test[data-skin-kind="vector"] .pet-vector {
+  animation: vc-work 1.1s ease-in-out infinite;
+}
+#pet.pet--wait[data-skin-kind="vector"] .pet-vector {
+  animation: vc-bob 2.8s ease-in-out infinite;
+}
+
+@keyframes vc-bob {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  50% { transform: translateY(-3px) rotate(0); }
+}
+@keyframes vc-think {
+  0%, 100% { transform: translateY(0) rotate(-4deg); }
+  50% { transform: translateY(-3px) rotate(4deg); }
+}
+@keyframes vc-hop {
+  0%, 100% { transform: translateY(0) scale(1); }
+  40%, 60% { transform: translateY(-9px) scale(1.06); }
+}
+@keyframes vc-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+@keyframes vc-work {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50% { transform: translateY(-2px) rotate(2deg); }
+}
+
+/* Per-character signature idle animations (on parts, compose with whole-body anim). */
+/* Cat: tail sway + blink */
+#pet[data-vector="cat"] .vc-cat-tail {
+  transform-box: fill-box;
+  transform-origin: 8% 88%;
+  animation: cat-tail 2.4s ease-in-out infinite;
+}
+#pet[data-vector="cat"] .vc-cat-eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: vc-blink 4.5s infinite;
+}
+#pet[data-vector="cat"] .vc-cat-ear {
+  transform-box: fill-box;
+  transform-origin: 50% 85%;
+  animation: cat-ear 5.2s ease-in-out infinite;
+}
+#pet.pet--editing[data-vector="cat"] .vc-cat-paw-l,
+#pet.pet--tool[data-vector="cat"] .vc-cat-paw-l {
+  transform-box: fill-box;
+  transform-origin: 50% 20%;
+  animation: cat-type-l .42s ease-in-out infinite alternate;
+}
+#pet.pet--editing[data-vector="cat"] .vc-cat-paw-r,
+#pet.pet--tool[data-vector="cat"] .vc-cat-paw-r {
+  transform-box: fill-box;
+  transform-origin: 50% 20%;
+  animation: cat-type-r .42s ease-in-out infinite alternate;
+}
+@keyframes cat-tail {
+  0%, 100% { transform: rotate(-5deg); }
+  50% { transform: rotate(12deg); }
+}
+@keyframes cat-ear {
+  0%, 88%, 100% { transform: rotate(0); }
+  92% { transform: rotate(-7deg); }
+  96% { transform: rotate(5deg); }
+}
+@keyframes cat-type-l { to { transform: translateY(2px) rotate(5deg); } }
+@keyframes cat-type-r { to { transform: translateY(-1px) rotate(-5deg); } }
+@keyframes vc-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  96% { transform: scaleY(0.1); }
+}
+
+/* Slime: squish */
+#pet[data-vector="slime"] .vc-slime-body {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: slime-squish 2.6s ease-in-out infinite;
+}
+#pet[data-vector="slime"] .vc-slime-bubbles {
+  animation: slime-bubbles 3.4s ease-in-out infinite;
+}
+#pet[data-vector="slime"] .vc-slime-leaf {
+  transform-box: fill-box;
+  transform-origin: 30% 100%;
+  animation: slime-leaf 2.6s ease-in-out infinite;
+}
+#pet[data-vector="slime"] .vc-slime-eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: vc-blink 4.8s infinite;
+}
+@keyframes slime-squish {
+  0%, 100% { transform: scaleY(1) scaleX(1); }
+  50% { transform: scaleY(0.92) scaleX(1.06); }
+}
+@keyframes slime-bubbles {
+  0%, 100% { transform: translateY(1px); opacity: .65; }
+  50% { transform: translateY(-4px); opacity: 1; }
+}
+@keyframes slime-leaf {
+  0%, 100% { transform: rotate(-2deg); }
+  50% { transform: rotate(5deg); }
+}
+
+/* Robot: LED + core pulse */
+#pet[data-vector="robot"] .vc-robot-led {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: led-blink 1.4s ease-in-out infinite;
+}
+#pet[data-vector="robot"] .vc-robot-core {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: core-pulse 1.8s ease-in-out infinite;
+}
+#pet[data-vector="robot"] .vc-robot-eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: vc-blink 5.4s infinite;
+}
+#pet.pet--editing[data-vector="robot"] .vc-robot-arm-l,
+#pet.pet--tool[data-vector="robot"] .vc-robot-arm-l {
+  transform-box: fill-box;
+  transform-origin: 85% 20%;
+  animation: robot-arm-l .46s ease-in-out infinite alternate;
+}
+#pet.pet--editing[data-vector="robot"] .vc-robot-arm-r,
+#pet.pet--tool[data-vector="robot"] .vc-robot-arm-r {
+  transform-box: fill-box;
+  transform-origin: 15% 20%;
+  animation: robot-arm-r .46s ease-in-out infinite alternate;
+}
+@keyframes led-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@keyframes core-pulse {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
+}
+@keyframes robot-arm-l { to { transform: rotate(8deg) translateY(2px); } }
+@keyframes robot-arm-r { to { transform: rotate(-8deg) translateY(-1px); } }

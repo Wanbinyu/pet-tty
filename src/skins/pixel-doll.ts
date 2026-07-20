@@ -1,4 +1,4 @@
-import { loadImage } from "./pixelize";
+import { loadImage, quantizeInPlace } from "./pixelize";
 import { isolateSubject } from "./segment";
 
 export type DollProgress = (stage: string, ratio: number) => void;
@@ -9,22 +9,19 @@ export interface DollOptions {
   onProgress?: DollProgress;
 }
 
-interface ZoneColors {
-  hair: string;
-  skin: string;
-  outline: string;
-  clothMain: string;
-  clothAccent: string;
-  legs: string;
-  shoes: string;
-  eye: string;
+interface ContentBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
 }
 
-type RGB = [number, number, number];
-
 /**
- * Build a chibi pixel doll from photo colors + proportions — not a mosaic.
- * Skin and hair are separated with skin-tone heuristics so hair isn't used as face.
+ * Turn a photo into a faithful pixel character.
+ *
+ * The old implementation sampled a few colors and redrew every person with the
+ * same doll template. This pipeline keeps the isolated silhouette, hairstyle,
+ * clothes and pose, then applies a restrained palette and hand-pixelled outline.
  */
 export async function makePixelDollFromImage(
   dataUrl: string,
@@ -35,482 +32,234 @@ export async function makePixelDollFromImage(
 
   let src = dataUrl;
   if (options.isolate) {
-    progress("isolate", 0.15);
+    progress("isolate", 0.14);
     try {
       src = await isolateSubject(dataUrl);
     } catch {
-      /* keep original */
+      // A detailed pixel treatment is still useful when segmentation is not
+      // available, so keep the original image as a graceful fallback.
     }
   }
-  progress("analyze", 0.55);
 
+  progress("analyze", 0.56);
   const img = await loadImage(src);
-  const analysis = analyzeReference(img);
-  progress("draw", 0.75);
+  const source = readSource(img);
+  const box = contentBox(source.data.data, source.canvas.width, source.canvas.height);
 
-  const w = Math.max(24, Math.min(64, options.width ?? 32));
-  const h = Math.round(w * 1.5);
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d")!;
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, w, h);
+  const gridW = clamp(Math.round(options.width ?? 64), 24, 64);
+  const gridH = Math.round(gridW * 1.48);
+  const small = document.createElement("canvas");
+  small.width = gridW;
+  small.height = gridH;
+  const ctx = small.getContext("2d", { willReadFrequently: true })!;
+  ctx.clearRect(0, 0, gridW, gridH);
 
-  drawChibi(ctx, w, h, analysis.colors, analysis.headRatio);
-  progress("done", 1);
+  const srcW = Math.max(1, box.maxX - box.minX + 1);
+  const srcH = Math.max(1, box.maxY - box.minY + 1);
+  const insetX = Math.max(2, Math.round(gridW * 0.055));
+  const insetTop = Math.max(2, Math.round(gridH * 0.035));
+  const insetBottom = Math.max(3, Math.round(gridH * 0.055));
+  const scale = Math.min(
+    (gridW - insetX * 2) / srcW,
+    (gridH - insetTop - insetBottom) / srcH,
+  );
+  const dw = Math.max(1, Math.round(srcW * scale));
+  const dh = Math.max(1, Math.round(srcH * scale));
+  const dx = Math.round((gridW - dw) / 2);
+  const dy = gridH - insetBottom - dh;
 
-  const scale = 4;
+  // A smoothed reduction retains facial and clothing information before the
+  // palette is deliberately snapped to pixel-art colors.
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(
+    source.canvas,
+    box.minX,
+    box.minY,
+    srcW,
+    srcH,
+    dx,
+    dy,
+    dw,
+    dh,
+  );
+
+  progress("draw", 0.76);
+  const pixels = ctx.getImageData(0, 0, gridW, gridH);
+  normalizeAlpha(pixels);
+  const paletteSize = gridW >= 56 ? 30 : gridW >= 36 ? 20 : 12;
+  quantizeInPlace(pixels, paletteSize);
+  addPixelOutline(pixels, gridW, gridH);
+  addSelectiveDetail(pixels, gridW, gridH);
+  ctx.putImageData(pixels, 0, 0);
+
+  // Keep every source pixel crisp in the stored skin. The pet renderer can
+  // scale this PNG down without destroying the authored pixel grid.
+  const upscale = gridW >= 56 ? 3 : gridW >= 36 ? 4 : 5;
   const out = document.createElement("canvas");
-  out.width = w * scale;
-  out.height = h * scale;
-  const octx = out.getContext("2d")!;
-  octx.imageSmoothingEnabled = false;
-  octx.drawImage(canvas, 0, 0, out.width, out.height);
+  out.width = gridW * upscale;
+  out.height = gridH * upscale;
+  const outCtx = out.getContext("2d")!;
+  outCtx.imageSmoothingEnabled = false;
+  outCtx.clearRect(0, 0, out.width, out.height);
+  outCtx.drawImage(small, 0, 0, out.width, out.height);
+
+  progress("done", 1);
   return out.toDataURL("image/png");
 }
 
-function analyzeReference(img: HTMLImageElement): {
-  colors: ZoneColors;
-  headRatio: number;
+function readSource(img: HTMLImageElement): {
+  canvas: HTMLCanvasElement;
+  data: ImageData;
 } {
-  const w = img.naturalWidth || img.width;
-  const h = img.naturalHeight || img.height;
-  const c = document.createElement("canvas");
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext("2d", { willReadFrequently: true })!;
-  ctx.drawImage(img, 0, 0);
-  const { data } = ctx.getImageData(0, 0, w, h);
-
-  const box = contentBox(data, w, h);
-  const { minX, minY, maxX, maxY } = box;
-  const bh = Math.max(1, maxY - minY + 1);
-  const bw = Math.max(1, maxX - minX + 1);
-  const midX = (minX + maxX) / 2;
-
-  // --- Head band (top ~34% of subject) ---
-  const headY0 = minY;
-  const headY1 = minY + Math.floor(bh * 0.34);
-  // Face: center of lower head (cheeks), prefer skin-like
-  const faceY0 = minY + Math.floor(bh * 0.14);
-  const faceY1 = minY + Math.floor(bh * 0.32);
-  const faceX0 = midX - bw * 0.18;
-  const faceX1 = midX + bw * 0.18;
-  // Hair: top crown + side strips, prefer NON-skin
-  const hairTop = samplePrefer(
-    data,
-    w,
-    h,
-    minX,
-    headY0,
-    maxX,
-    minY + Math.floor(bh * 0.16),
-    "nonskin",
-  );
-  const hairSideL = samplePrefer(
-    data,
-    w,
-    h,
-    minX,
-    minY + Math.floor(bh * 0.08),
-    minX + bw * 0.22,
-    headY1,
-    "nonskin",
-  );
-  const hairSideR = samplePrefer(
-    data,
-    w,
-    h,
-    maxX - bw * 0.22,
-    minY + Math.floor(bh * 0.08),
-    maxX,
-    headY1,
-    "nonskin",
-  );
-  let hair = pickBest([hairTop, hairSideL, hairSideR], "nonskin") ?? [70, 60, 55];
-
-  let skin =
-    samplePrefer(data, w, h, faceX0, faceY0, faceX1, faceY1, "skin") ??
-    samplePrefer(
-      data,
-      w,
-      h,
-      midX - bw * 0.12,
-      minY + bh * 0.18,
-      midX + bw * 0.12,
-      minY + bh * 0.3,
-      "skin",
-    ) ??
-    [235, 195, 175];
-
-  // If skin still looks like hair (too dark / low chroma), force default skin
-  if (!isSkinTone(skin) && isSkinTone(shade(skin, 1.15))) {
-    skin = shade(skin, 1.12);
-  }
-  if (!isSkinTone(skin)) {
-    // try wider center lower face
-    skin =
-      samplePrefer(
-        data,
-        w,
-        h,
-        midX - bw * 0.2,
-        minY + bh * 0.2,
-        midX + bw * 0.2,
-        minY + bh * 0.36,
-        "skin",
-      ) ?? ([235, 195, 175] as RGB);
-  }
-
-  // Hair must differ from skin
-  if (colorDist(hair, skin) < 35 || isSkinTone(hair)) {
-    // re-sample top corners only
-    hair =
-      samplePrefer(
-        data,
-        w,
-        h,
-        minX,
-        minY,
-        minX + bw * 0.35,
-        minY + bh * 0.12,
-        "nonskin",
-      ) ??
-      samplePrefer(
-        data,
-        w,
-        h,
-        maxX - bw * 0.35,
-        minY,
-        maxX,
-        minY + bh * 0.12,
-        "nonskin",
-      ) ??
-      shade(skin, 0.45);
-  }
-  if (colorDist(hair, skin) < 28) {
-    hair = shade(hair, 0.55);
-  }
-
-  // Body zones
-  const cloth =
-    samplePrefer(
-      data,
-      w,
-      h,
-      midX - bw * 0.25,
-      minY + bh * 0.4,
-      midX + bw * 0.25,
-      minY + bh * 0.68,
-      "any",
-    ) ?? ([90, 150, 200] as RGB);
-
-  const accent =
-    samplePrefer(
-      data,
-      w,
-      h,
-      minX + bw * 0.05,
-      minY + bh * 0.42,
-      minX + bw * 0.28,
-      minY + bh * 0.65,
-      "any",
-    ) ?? shade(cloth, 0.8);
-
-  const legs =
-    samplePrefer(
-      data,
-      w,
-      h,
-      midX - bw * 0.15,
-      minY + bh * 0.7,
-      midX + bw * 0.15,
-      minY + bh * 0.88,
-      "any",
-    ) ?? shade(skin, 0.92);
-
-  const shoes =
-    samplePrefer(
-      data,
-      w,
-      h,
-      midX - bw * 0.2,
-      minY + bh * 0.88,
-      midX + bw * 0.2,
-      maxY,
-      "nonskin",
-    ) ?? ([45, 42, 48] as RGB);
-
-  // Eyes: darker than skin, not same as hair if possible
-  let eye = shade(hair, 0.4);
-  if (colorDist(eye, skin) < 40) eye = [40, 50, 60];
-
-  // Head ratio: smaller than before to avoid big square head
-  const headRatio = clamp(0.3, 0.26, 0.34);
-
-  return {
-    headRatio,
-    colors: {
-      hair: rgb(hair),
-      skin: rgb(skin),
-      outline: rgb(shade(hair, 0.32)),
-      clothMain: rgb(cloth),
-      clothAccent: rgb(accent),
-      legs: rgb(isSkinTone(legs) ? legs : shade(skin, 0.9)),
-      shoes: rgb(shoes),
-      eye: rgb(eye),
-    },
-  };
+  const naturalW = img.naturalWidth || img.width;
+  const naturalH = img.naturalHeight || img.height;
+  const maxSide = 720;
+  const scale = Math.min(1, maxSide / Math.max(naturalW, naturalH));
+  const w = Math.max(1, Math.round(naturalW * scale));
+  const h = Math.max(1, Math.round(naturalH * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(img, 0, 0, w, h);
+  return { canvas, data: ctx.getImageData(0, 0, w, h) };
 }
 
 function contentBox(
   data: Uint8ClampedArray,
   w: number,
   h: number,
-): { minX: number; minY: number; maxX: number; maxY: number } {
-  let minY = h,
-    maxY = 0,
-    minX = w,
-    maxX = 0;
-  let any = false;
+): ContentBox {
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (data[(y * w + x) * 4 + 3] > 20) {
-        any = true;
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-      }
+      if (data[(y * w + x) * 4 + 3] < 28) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
     }
   }
-  if (!any) return { minX: 0, minY: 0, maxX: w - 1, maxY: h - 1 };
-  return { minX, minY, maxX, maxY };
+
+  if (maxX < minX || maxY < minY) {
+    return { minX: 0, minY: 0, maxX: w - 1, maxY: h - 1 };
+  }
+
+  const padX = Math.max(1, Math.round((maxX - minX + 1) * 0.025));
+  const padY = Math.max(1, Math.round((maxY - minY + 1) * 0.02));
+  return {
+    minX: clamp(minX - padX, 0, w - 1),
+    minY: clamp(minY - padY, 0, h - 1),
+    maxX: clamp(maxX + padX, 0, w - 1),
+    maxY: clamp(maxY + padY, 0, h - 1),
+  };
 }
 
-/** Simple skin-tone heuristic (works for anime + photo-ish) */
-function isSkinTone(c: RGB): boolean {
-  const [r, g, b] = c;
-  // classic: R high, not too blue, not grey
-  if (r < 95 || g < 40 || b < 20) return false;
-  if (r < g || r < b) return false;
-  if (Math.abs(r - g) < 8 && Math.abs(r - b) < 8) return false; // grey
-  if (r - g < 8) return false;
-  // avoid pure yellow/green
-  if (g > r * 0.95 && b < 80) return false;
-  // upper bound: very light pink/peach OK
-  return r <= 255 && g <= 240 && b <= 220;
+function normalizeAlpha(image: ImageData) {
+  const { data } = image;
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3];
+    if (a < 42) {
+      data[i] = 0;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
+      data[i + 3] = 0;
+    } else {
+      // Pixel characters read more cleanly with decisive alpha steps.
+      data[i + 3] = a < 150 ? 190 : 255;
+    }
+  }
 }
 
-function samplePrefer(
-  data: Uint8ClampedArray,
-  w: number,
-  h: number,
-  x0: number,
-  y0: number,
-  x1: number,
-  y1: number,
-  mode: "skin" | "nonskin" | "any",
-): RGB | null {
-  x0 = clamp(Math.floor(x0), 0, w - 1);
-  x1 = clamp(Math.floor(x1), 0, w - 1);
-  y0 = clamp(Math.floor(y0), 0, h - 1);
-  y1 = clamp(Math.floor(y1), 0, h - 1);
-  if (x1 < x0 || y1 < y0) return null;
+function addPixelOutline(image: ImageData, w: number, h: number) {
+  const src = new Uint8ClampedArray(image.data);
+  const { data } = image;
+  const neighbors = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0],           [1, 0],
+    [-1, 1],  [0, 1],  [1, 1],
+  ] as const;
 
-  type Acc = { n: number; r: number; g: number; b: number; score: number };
-  const hist = new Map<string, Acc>();
-
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      if (data[i + 3] < 40) continue;
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      // skip pure white / pure black for clothing samples
-      if (r > 250 && g > 250 && b > 250) continue;
-      if (r < 12 && g < 12 && b < 12) continue;
+      if (src[i + 3] !== 0) continue;
 
-      const c: RGB = [r, g, b];
-      const skin = isSkinTone(c);
-      if (mode === "skin" && !skin) continue;
-      if (mode === "nonskin" && skin) continue;
-
-      const key = `${r >> 3},${g >> 3},${b >> 3}`;
-      const e = hist.get(key) ?? { n: 0, r: 0, g: 0, b: 0, score: 0 };
-      e.n++;
-      e.r += r;
-      e.g += g;
-      e.b += b;
-      // prefer more saturated colors for hair/cloth
-      const sat = Math.max(r, g, b) - Math.min(r, g, b);
-      e.score += 1 + sat / 255;
-      hist.set(key, e);
-    }
-  }
-
-  let best: Acc | null = null;
-  for (const e of hist.values()) {
-    if (!best || e.score > best.score) best = e;
-  }
-  if (!best || best.n < 3) return null;
-  return [
-    Math.round(best.r / best.n),
-    Math.round(best.g / best.n),
-    Math.round(best.b / best.n),
-  ];
-}
-
-function pickBest(
-  list: (RGB | null)[],
-  mode: "skin" | "nonskin",
-): RGB | null {
-  const ok = list.filter((c): c is RGB => {
-    if (!c) return false;
-    if (mode === "skin") return isSkinTone(c);
-    if (mode === "nonskin") return !isSkinTone(c);
-    return true;
-  });
-  if (ok.length === 0) {
-    return list.find((c) => c != null) ?? null;
-  }
-  // prefer higher saturation for hair
-  ok.sort((a, b) => sat(b) - sat(a));
-  return ok[0];
-}
-
-function sat(c: RGB): number {
-  return Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]);
-}
-
-function colorDist(a: RGB, b: RGB): number {
-  const dr = a[0] - b[0];
-  const dg = a[1] - b[1];
-  const db = a[2] - b[2];
-  return Math.sqrt(dr * dr + dg * dg + db * db);
-}
-
-function shade(c: RGB, f: number): RGB {
-  return [
-    clamp(Math.round(c[0] * f), 0, 255),
-    clamp(Math.round(c[1] * f), 0, 255),
-    clamp(Math.round(c[2] * f), 0, 255),
-  ];
-}
-
-function rgb(c: RGB): string {
-  return `rgb(${c[0]},${c[1]},${c[2]})`;
-}
-
-function clamp(v: number, a: number, b: number) {
-  return Math.max(a, Math.min(b, v));
-}
-
-/** Rounder chibi head (ellipse mask) + clearer hair layers */
-function drawChibi(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  c: ZoneColors,
-  headRatio: number,
-) {
-  const px = (x: number, y: number, col: string, ww = 1, hh = 1) => {
-    ctx.fillStyle = col;
-    ctx.fillRect(Math.round(x), Math.round(y), ww, hh);
-  };
-
-  /** fill ellipse with pixel rects */
-  const fillEllipse = (
-    cx: number,
-    cy: number,
-    rx: number,
-    ry: number,
-    col: string,
-  ) => {
-    for (let y = -ry; y <= ry; y++) {
-      for (let x = -rx; x <= rx; x++) {
-        if ((x * x) / (rx * rx) + (y * y) / (ry * ry) <= 1.05) {
-          px(cx + x, cy + y, col);
-        }
+      let rr = 0;
+      let gg = 0;
+      let bb = 0;
+      let count = 0;
+      for (const [ox, oy] of neighbors) {
+        const nx = x + ox;
+        const ny = y + oy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const ni = (ny * w + nx) * 4;
+        if (src[ni + 3] < 150) continue;
+        rr += src[ni];
+        gg += src[ni + 1];
+        bb += src[ni + 2];
+        count++;
       }
+      if (count === 0) continue;
+
+      const localR = rr / count;
+      const localG = gg / count;
+      const localB = bb / count;
+      data[i] = Math.round(localR * 0.22 + 12);
+      data[i + 1] = Math.round(localG * 0.22 + 15);
+      data[i + 2] = Math.round(localB * 0.24 + 22);
+      data[i + 3] = 255;
     }
-  };
-
-  const cx = Math.floor(w / 2);
-  // Slightly smaller head so it doesn't dominate
-  const headH = Math.round(h * Math.min(headRatio, 0.32));
-  const headW = Math.round(w * 0.48);
-  const headY = Math.round(h * 0.08);
-  const headCy = headY + Math.floor(headH / 2);
-  const rx = Math.floor(headW / 2);
-  const ry = Math.floor(headH / 2);
-
-  // Hair back (larger ellipse)
-  fillEllipse(cx, headCy + 1, rx + 2, ry + 2, c.hair);
-
-  // Face (smaller ellipse, skin)
-  fillEllipse(cx, headCy + 1, Math.max(3, rx - 1), Math.max(3, ry - 1), c.skin);
-
-  // Bangs: top cap + side locks (hair over face)
-  fillEllipse(cx, headY + Math.floor(ry * 0.55), rx + 1, Math.floor(ry * 0.55), c.hair);
-  // side hair
-  for (let i = 0; i < ry + 2; i++) {
-    px(cx - rx - 1, headCy - ry + 2 + i, c.hair, 2, 1);
-    px(cx + rx - 1, headCy - ry + 2 + i, c.hair, 2, 1);
   }
-  // fringe strands
-  px(cx - Math.floor(rx * 0.5), headY + Math.floor(ry * 0.7), c.hair, 2, 3);
-  px(cx + Math.floor(rx * 0.2), headY + Math.floor(ry * 0.65), c.hair, 2, 3);
+}
 
-  // Eyes (smaller)
-  const eyeY = headCy + 1;
-  const eyeS = Math.max(1, Math.floor(w / 18));
-  px(cx - Math.floor(rx * 0.35), eyeY, c.eye, eyeS, eyeS + 1);
-  px(cx + Math.floor(rx * 0.2), eyeY, c.eye, eyeS, eyeS + 1);
-  px(cx - Math.floor(rx * 0.35), eyeY, "#fff", 1, 1);
-  px(cx + Math.floor(rx * 0.2), eyeY, "#fff", 1, 1);
+/** Add sparse dark pixels at strong internal boundaries without tracing every
+ * photographic edge. This keeps eyes, hair locks and clothing seams legible. */
+function addSelectiveDetail(image: ImageData, w: number, h: number) {
+  const src = new Uint8ClampedArray(image.data);
+  const { data } = image;
 
-  // Blush
-  px(cx - Math.floor(rx * 0.45), eyeY + eyeS + 1, "rgba(255,140,140,0.5)", 2, 1);
-  px(cx + Math.floor(rx * 0.25), eyeY + eyeS + 1, "rgba(255,140,140,0.5)", 2, 1);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      if (src[i + 3] < 240) continue;
+      const right = i + 4;
+      const down = i + w * 4;
+      if (src[right + 3] < 240 || src[down + 3] < 240) continue;
 
-  // Body — narrower than head
-  const bodyY = headCy + ry - 1;
-  const bodyH = Math.floor(h * 0.26);
-  const bodyW = Math.floor(w * 0.36);
-  const bodyX = cx - Math.floor(bodyW / 2);
-  px(bodyX, bodyY, c.clothMain, bodyW, bodyH);
-  px(bodyX, bodyY + Math.floor(bodyH * 0.4), c.clothAccent, bodyW, Math.max(1, Math.floor(bodyH * 0.12)));
-  px(bodyX + 1, bodyY, c.skin, bodyW - 2, 2);
+      const edge = Math.max(colorDelta(src, i, right), colorDelta(src, i, down));
+      if (edge < 86 || (x + y) % 3 !== 0) continue;
 
-  // Arms
-  const armW = Math.max(2, Math.floor(w * 0.09));
-  const armH = Math.floor(bodyH * 0.8);
-  px(bodyX - armW, bodyY + 2, c.clothMain, armW, armH);
-  px(bodyX + bodyW, bodyY + 2, c.clothMain, armW, armH);
-  px(bodyX - armW, bodyY + armH, c.skin, armW, 2);
-  px(bodyX + bodyW, bodyY + armH, c.skin, armW, 2);
+      const lum = luminance(src[i], src[i + 1], src[i + 2]);
+      const otherLum = Math.min(
+        luminance(src[right], src[right + 1], src[right + 2]),
+        luminance(src[down], src[down + 1], src[down + 2]),
+      );
+      if (lum > otherLum + 10) continue;
 
-  // Skirt
-  const skirtY = bodyY + bodyH - 1;
-  const skirtH = Math.floor(h * 0.11);
-  const skirtW = bodyW + 4;
-  px(cx - Math.floor(skirtW / 2), skirtY, c.clothMain, skirtW, skirtH);
-  px(cx - Math.floor(skirtW / 2), skirtY + skirtH - 1, c.clothAccent, skirtW, 1);
+      data[i] = Math.round(data[i] * 0.58);
+      data[i + 1] = Math.round(data[i + 1] * 0.58);
+      data[i + 2] = Math.round(data[i + 2] * 0.62);
+    }
+  }
+}
 
-  // Legs + shoes
-  const legY = skirtY + skirtH;
-  const legH = Math.floor(h * 0.13);
-  const legW = Math.max(2, Math.floor(w * 0.09));
-  px(cx - legW - 1, legY, c.legs, legW, legH);
-  px(cx + 1, legY, c.legs, legW, legH);
-  const shoeH = Math.max(2, Math.floor(h * 0.055));
-  px(cx - legW - 2, legY + legH - 1, c.shoes, legW + 2, shoeH);
-  px(cx, legY + legH - 1, c.shoes, legW + 2, shoeH);
+function colorDelta(data: Uint8ClampedArray, a: number, b: number): number {
+  const dr = data[a] - data[b];
+  const dg = data[a + 1] - data[b + 1];
+  const db = data[a + 2] - data[b + 2];
+  return Math.sqrt(dr * dr * 0.3 + dg * dg * 0.59 + db * db * 0.11);
+}
 
-  // Outline dots on head sides
-  px(cx - rx - 1, headCy - 1, c.outline, 1, Math.max(2, Math.floor(ry * 0.6)));
-  px(cx + rx, headCy - 1, c.outline, 1, Math.max(2, Math.floor(ry * 0.6)));
+function luminance(r: number, g: number, b: number): number {
+  return r * 0.2126 + g * 0.7152 + b * 0.0722;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
 }

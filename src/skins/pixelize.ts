@@ -91,7 +91,7 @@ export async function normalizeImport(
   return canvas.toDataURL("image/png");
 }
 
-function quantizeInPlace(imageData: ImageData, maxColors: number) {
+export function quantizeInPlace(imageData: ImageData, maxColors: number) {
   const { data } = imageData;
   const pixels: number[][] = [];
 

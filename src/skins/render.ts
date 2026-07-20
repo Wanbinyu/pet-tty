@@ -1,5 +1,6 @@
 import type { AgentState } from "../events/types";
 import { PET_VISUAL } from "../pet/mood";
+import { getVectorCharacter } from "./vector";
 import type { SkinMeta } from "./types";
 
 /**
@@ -14,21 +15,36 @@ export function applySkinToDom(
   const cssBody = petRoot.querySelector(".pet-css") as HTMLElement | null;
   const img = petRoot.querySelector(".pet-img") as HTMLImageElement | null;
   const face = petRoot.querySelector(".pet-face") as HTMLElement | null;
+  const vectorBox = petRoot.querySelector(".pet-vector") as HTMLElement | null;
 
   petRoot.className = `pet ${visual.bodyClass}`;
   petRoot.dataset.skinKind = skin.kind;
   petRoot.dataset.theme = skin.theme ?? "";
   petRoot.dataset.skinId = skin.id;
+  petRoot.dataset.vector = skin.vectorId ?? "";
 
-  if (skin.kind === "image" && skin.imageDataUrl && img && cssBody) {
-    cssBody.classList.add("hidden");
+  const hideAllLayers = () => {
+    cssBody?.classList.add("hidden");
+    img?.classList.add("hidden");
+    if (img) img.removeAttribute("src");
+    vectorBox?.classList.add("hidden");
+  };
+
+  if (skin.kind === "vector" && skin.vectorId && vectorBox) {
+    const vc = getVectorCharacter(skin.vectorId);
+    hideAllLayers();
+    if (vc) {
+      vectorBox.classList.remove("hidden");
+      vectorBox.innerHTML = vc.svg;
+    }
+  } else if (skin.kind === "image" && skin.imageDataUrl && img && cssBody) {
+    hideAllLayers();
     img.classList.remove("hidden");
     img.src = skin.imageDataUrl;
     img.classList.toggle("pixelated", !!skin.pixelated);
     img.alt = skin.nameEn;
   } else if (cssBody && img) {
-    img.classList.add("hidden");
-    img.removeAttribute("src");
+    hideAllLayers();
     cssBody.classList.remove("hidden");
     petRoot.classList.add(`theme-${skin.theme ?? "ember"}`);
     // remove other themes
