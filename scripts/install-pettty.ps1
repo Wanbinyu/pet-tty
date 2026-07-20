@@ -11,11 +11,12 @@ $BinDir = Join-Path $env:USERPROFILE ".local\bin"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
 $Launcher = Join-Path $BinDir "pettty.cmd"
-$Node = (Get-Command node -ErrorAction SilentlyContinue)?.Source
-if (-not $Node) {
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCmd) {
   Write-Host "ERROR: node not found in PATH. Install Node.js 18+ first." -ForegroundColor Red
   exit 1
 }
+$Node = $nodeCmd.Source
 
 $mjs = Join-Path $Root "bin\pettty.mjs"
 if (-not (Test-Path $mjs)) {
