@@ -81,7 +81,7 @@ fn process_scan_count() -> usize {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let names = ["claude.exe", "Claude.exe"];
+        let names = ["claude.exe"];
         let mut total = 0usize;
         for name in names {
             let out = Command::new("tasklist")
@@ -211,7 +211,9 @@ fn build_presence() -> ClaudePresence {
 
     ClaudePresence {
         connected: !live.is_empty() || proc_n > 0,
-        live_count: live.len().max(proc_n),
+        // Session-file count is the accurate "N terminals" value. (proc_n is
+        // only used for the connected flag + synthetic-session fallback above.)
+        live_count: live.len(),
         sessions: live,
         just_connected: false,
         just_disconnected: false,

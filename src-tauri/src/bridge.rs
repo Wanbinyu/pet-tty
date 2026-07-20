@@ -164,11 +164,14 @@ fn map_claude_hook(raw: &Value, phase_hint: &str) -> Value {
 
     let short_sid = short_session(&session_id);
 
-    let mut state = "thinking";
-    let mut title = "Claude".to_string();
+    // Declared without an initializer: every branch of the match below assigns
+    // these, so a default value would be dead (and rustc warns). `detail` and
+    // `needs_attention` keep defaults since not all branches set them.
+    let state: &str;
+    let title: String;
     let mut detail: Option<String> = None;
     let mut needs_attention = false;
-    let mut sticky_ms: u64 = 5000;
+    let sticky_ms: u64;
 
     if p.contains("pretool") {
         let n = tool_name.to_lowercase();
@@ -245,8 +248,6 @@ fn map_claude_hook(raw: &Value, phase_hint: &str) -> Value {
         });
         sticky_ms = 8000;
     }
-
-    let title = format!("[{short_sid}] {title}");
 
     json!({
         "schema": "petdeck.event.v1",
