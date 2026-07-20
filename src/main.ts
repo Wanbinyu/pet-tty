@@ -1,0 +1,1290 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { getLocale, setLocale, t } from "./i18n";
+import { buildDemoEvents } from "./events/demo-script";
+import { EventPlayer } from "./events/player";
+import type { AgentEvent, AgentState } from "./events/types";
+import {
+  getClaudeAdapterStatus,
+  setBridgeStatus,
+} from "./adapters/claude-code/stub";
+import { loadSettings, saveSettings } from "./settings";
+import {
+  addCustomSkin,
+  getActiveSkin,
+  getActiveSkinId,
+  listAllSkins,
+  makeCustomId,
+  removeCustomSkin,
+  setActiveSkinId,
+} from "./skins/store";
+import { applySkinToDom } from "./skins/render";
+import { fileToDataUrl, normalizeImport, type PixelQuality } from "./skins/pixelize";
+import { makePixelDollFromImage } from "./skins/pixel-doll";
+import { hideWorkProgress, setWorkProgress } from "./skins/progress";
+import type { SkinMeta } from "./skins/types";
+import {
+  listSessions,
+  markIdle,
+  primarySession,
+  upsertSession,
+} from "./sessions";
+
+const PET_SIZE = { w: 210, h: 340 };
+/** Taller when multiple AI sessions are active */
+const PET_MULTI = { w: 220, h: 480 };
+/** Expanded while context menu is open so list can scroll */
+const MENU_SIZE = { w: 250, h: 440 };
+const INSP_SIZE = { w: 360, h: 640 };
+
+const player = new EventPlayer();
+let latest: AgentEvent | null = null;
+let demoPlaying = false;
+let showBubble = true;
+let idleHideTimer: ReturnType<typeof setTimeout> | null = null;
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+let pixelQuality: PixelQuality = "fine";
+/** Last live source label e.g. claude-code / grok */
+let liveSource: string | null = null;
+let liveAt = 0;
+
+/** Connection strip state (process presence + activity) */
+type ConnUi = "offline" | "online" | "busy" | "closed";
+let connUi: ConnUi = "offline";
+let claudeConnected = false;
+let claudeLiveCount = 0;
+let toastTimerConn: ReturnType<typeof setTimeout> | null = null;
+
+interface ClaudePresence {
+  connected: boolean;
+  liveCount: number;
+  sessions: { sessionId: string; pid: number; name: string; status: string }[];
+  justConnected: boolean;
+  justDisconnected: boolean;
+}
+
+function showConnToast(msg: string) {
+  const el = document.getElementById("conn-toast");
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  if (toastTimerConn) clearTimeout(toastTimerConn);
+  toastTimerConn = setTimeout(() => el.classList.add("hidden"), 3200);
+}
+
+function updateConnPanel() {
+  const panel = document.getElementById("conn-panel");
+  const title = document.getElementById("conn-title");
+  const sub = document.getElementById("conn-sub");
+  if (!panel || !title || !sub) return;
+
+  const zh = getLocale() === "zh-CN";
+  panel.classList.remove(
+    "conn-offline",
+    "conn-online",
+    "conn-busy",
+    "conn-closed",
+  );
+
+  const busyStates = new Set([
+    "thinking",
+    "tool_call",
+    "editing",
+    "running_tests",
+    "waiting_user",
+  ]);
+  const activityBusy =
+    latest != null &&
+    busyStates.has(latest.state) &&
+    liveSource != null &&
+    Date.now() - liveAt < 120_000;
+
+  if (activityBusy && claudeConnected) {
+    connUi = "busy";
+  } else if (claudeConnected) {
+    connUi = "online";
+  } else if (connUi === "online" || connUi === "busy" || connUi === "closed") {
+    // stay on closed until reconnect (don't flash offline forever as "从未连接")
+    connUi = "closed";
+  } else {
+    connUi = "offline";
+  }
+
+  panel.classList.add(`conn-${connUi}`);
+
+  if (connUi === "offline") {
+    title.textContent = zh ? "未连接 Claude" : "Claude not connected";
+    sub.textContent = zh
+      ? "启动 Claude 终端后将自动检测"
+      : "Start Claude Code to connect";
+  } else if (connUi === "online") {
+    title.textContent = zh ? "已连接 · 连接中" : "Connected";
+    sub.textContent = zh
+      ? `${claudeLiveCount} 个终端 · 待命中（可拖动/换肤）`
+      : `${claudeLiveCount} session(s) · idle`;
+  } else if (connUi === "busy") {
+    title.textContent = zh ? "执行中" : "Working";
+    const st = latest ? stateLabel(latest.state) : "";
+    sub.textContent = latest
+      ? `${st} · ${latest.title}`
+      : zh
+        ? "Claude 正在工作…"
+        : "Claude is working…";
+  } else {
+    title.textContent = zh ? "对话已关闭" : "Session closed";
+    sub.textContent = zh
+      ? "Claude 终端已退出 · 再次启动可重连"
+      : "Claude exited · start again to reconnect";
+  }
+}
+
+function onClaudePresence(p: ClaudePresence) {
+  const was = claudeConnected;
+  claudeConnected = p.connected;
+  claudeLiveCount = p.liveCount ?? p.sessions?.length ?? 0;
+
+  if (p.justConnected || (!was && p.connected)) {
+    showConnToast(
+      getLocale() === "zh-CN" ? "已检测到 Claude" : "Claude detected",
+    );
+    // Also push a soft live event so multi-session stack knows
+    ingestLiveEvent({
+      schema: "petdeck.event.v1",
+      source: "claude-code",
+      sessionId: p.sessions?.[0]?.sessionId || "claude-presence",
+      sessionLabel: "live",
+      ts: new Date().toISOString(),
+      state: "idle",
+      title: "Claude connected",
+      detail: getLocale() === "zh-CN" ? "连接中 · 待命" : "Connected · idle",
+      progress: { kind: "none" },
+      needsAttention: false,
+      stickyMs: 0,
+    });
+  }
+  if (p.justDisconnected || (was && !p.connected)) {
+    showConnToast(
+      getLocale() === "zh-CN" ? "对话已关闭" : "Session closed",
+    );
+    liveSource = liveSource; // keep last
+    if (latest && latest.source === "claude-code") {
+      latest = {
+        ...latest,
+        state: "idle",
+        title:
+          getLocale() === "zh-CN" ? "对话已关闭" : "Session closed",
+        detail: undefined,
+        progress: { kind: "none" },
+        needsAttention: false,
+        ts: new Date().toISOString(),
+      };
+      renderEvent(latest);
+    }
+  }
+  updateConnPanel();
+}
+
+const $ = <T extends HTMLElement>(id: string) =>
+  document.getElementById(id) as T;
+
+function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+async function win() {
+  return getCurrentWindow();
+}
+
+async function resizeTo(mode: "pet" | "menu" | "inspector") {
+  if (!isTauri()) return;
+  try {
+    let size = INSP_SIZE;
+    if (mode === "menu") size = MENU_SIZE;
+    else if (mode === "pet") {
+      const multi = listSessions().filter((s) => s.event.state !== "idle").length > 1
+        || listSessions().length > 1;
+      size = multi ? PET_MULTI : PET_SIZE;
+    }
+    await (await win()).setSize(new LogicalSize(size.w, size.h));
+  } catch {
+    /* ignore */
+  }
+}
+
+async function fitPetWindow() {
+  if (menuOpen) return;
+  if (!$("inspector").classList.contains("hidden")) return;
+  await resizeTo("pet");
+}
+
+/** Must be invoked directly from a user gesture (no await before call). */
+function startWindowDrag() {
+  if (!isTauri()) return;
+  try {
+    // Fire-and-forget: awaiting first would drop the OS gesture on Windows
+    void getCurrentWindow().startDragging();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function setAlwaysOnTop(on: boolean) {
+  saveSettings({ alwaysOnTop: on });
+  if (!isTauri()) return;
+  try {
+    await (await win()).setAlwaysOnTop(on);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function restorePosition() {
+  if (!isTauri()) return;
+  const s = loadSettings();
+  if (s.windowX == null || s.windowY == null) return;
+  try {
+    await (await win()).setPosition(
+      new PhysicalPosition(s.windowX, s.windowY),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+async function persistPosition() {
+  if (!isTauri()) return;
+  try {
+    const pos = await (await win()).outerPosition();
+    saveSettings({ windowX: pos.x, windowY: pos.y });
+  } catch {
+    /* ignore */
+  }
+}
+
+function refreshSkin() {
+  const state = latest?.state ?? "idle";
+  applySkinToDom($("pet"), getActiveSkin(), state);
+  renderSkinLists();
+}
+
+function showToast(msg: string) {
+  const el = $("skin-toast");
+  el.textContent = msg;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.textContent = "";
+  }, 3200);
+}
+
+let skinPopTargetId: string | null = null;
+
+function hideSkinPop() {
+  const pop = document.getElementById("skin-pop");
+  if (pop) pop.classList.add("hidden");
+  skinPopTargetId = null;
+}
+
+function showSkinPop(skinId: string, clientX: number, clientY: number) {
+  const d = t();
+  const skin = listAllSkins().find((s) => s.id === skinId);
+  if (!skin) return;
+
+  // Built-in: toast only, no delete popup
+  if (skin.builtin) {
+    showToast(d.ui.cannotDeleteBuiltin);
+    return;
+  }
+
+  const pop = $("skin-pop");
+  const loc = getLocale();
+  $("skin-pop-name").textContent =
+    loc === "zh-CN" ? skin.nameZh : skin.nameEn;
+  $("skin-pop-delete").textContent = d.ui.deleteConfirm;
+  $("skin-pop-cancel").textContent = d.ui.cancel;
+  skinPopTargetId = skinId;
+
+  pop.classList.remove("hidden");
+  // Position inside viewport
+  const pad = 8;
+  const pw = 160;
+  const ph = 100;
+  let x = clientX;
+  let y = clientY;
+  x = Math.max(pad, Math.min(x, window.innerWidth - pw - pad));
+  y = Math.max(pad, Math.min(y, window.innerHeight - ph - pad));
+  pop.style.left = `${x}px`;
+  pop.style.top = `${y}px`;
+}
+
+function confirmDeleteSkin() {
+  const d = t();
+  const id = skinPopTargetId;
+  hideSkinPop();
+  if (!id) return;
+  const skin = listAllSkins().find((s) => s.id === id);
+  if (!skin || skin.builtin) {
+    showToast(d.ui.cannotDeleteBuiltin);
+    return;
+  }
+  removeCustomSkin(id);
+  refreshSkin();
+  showToast(d.ui.deleted);
+}
+
+function renderSkinLists() {
+  const d = t();
+  const active = getActiveSkinId();
+  const skins = listAllSkins();
+  const loc = getLocale();
+
+  // Context menu list
+  const ctxList = $("ctx-skin-list");
+  ctxList.innerHTML = "";
+  for (const skin of skins) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ctx-item" + (skin.id === active ? " active-skin" : "");
+    btn.dataset.action = "skin";
+    btn.dataset.skinId = skin.id;
+    const mark = skin.id === active ? "✓ " : "";
+    const name = loc === "zh-CN" ? skin.nameZh : skin.nameEn;
+    btn.textContent = `${mark}${name}`;
+    btn.title = skin.builtin ? d.ui.cannotDeleteBuiltin : d.ui.deleteSkinHint;
+    btn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showSkinPop(skin.id, e.clientX, e.clientY);
+    });
+    ctxList.appendChild(btn);
+  }
+
+  // Inspector grid
+  const grid = $("skin-grid");
+  grid.innerHTML = "";
+  for (const skin of skins) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "skin-card" + (skin.id === active ? " active" : "");
+    card.dataset.skinId = skin.id;
+
+    const preview = document.createElement("div");
+    preview.className = "skin-card-preview";
+    if (skin.kind === "image" && skin.imageDataUrl) {
+      const img = document.createElement("img");
+      img.src = skin.imageDataUrl;
+      img.alt = "";
+      if (skin.pixelated) img.style.imageRendering = "pixelated";
+      preview.appendChild(img);
+    } else {
+      preview.classList.add(`swatch-${skin.theme ?? "ember"}`);
+      preview.textContent =
+        skin.theme === "pixel-blob" ? "▣" : skin.theme === "ghost" ? "◌" : "◕";
+    }
+
+    const name = document.createElement("div");
+    name.className = "skin-card-name";
+    name.textContent = loc === "zh-CN" ? skin.nameZh : skin.nameEn;
+
+    const tag = document.createElement("div");
+    tag.className = "skin-card-tag";
+    tag.textContent = skin.builtin ? d.ui.skinBuiltin : d.ui.skinCustom;
+    if (skin.id === active) tag.textContent += ` · ${d.ui.skinActive}`;
+
+    card.append(preview, name, tag);
+    card.title = skin.builtin ? d.ui.cannotDeleteBuiltin : d.ui.deleteSkinHint;
+    card.addEventListener("click", () => {
+      hideSkinPop();
+      setActiveSkinId(skin.id);
+      refreshSkin();
+    });
+    card.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showSkinPop(skin.id, e.clientX, e.clientY);
+    });
+    grid.appendChild(card);
+  }
+}
+
+function applyI18n() {
+  const d = t();
+  document.title = d.appName;
+
+  const headTitle = document.getElementById("ctx-head-title");
+  if (headTitle) headTitle.textContent = d.appName;
+
+  $("ctx-bubble").textContent = showBubble
+    ? d.ui.hideBubble
+    : d.ui.showBubble;
+  $("ctx-more").textContent = d.ui.moreInfo;
+  $("ctx-lang-label").textContent = d.ui.language;
+  $("ctx-zh").textContent = d.ui.chinese;
+  $("ctx-en").textContent = d.ui.english;
+  $("ctx-skins-label").textContent = d.ui.skins;
+  $("ctx-import").textContent = d.ui.importImage;
+  $("ctx-import-pixel").textContent = d.ui.importPixel;
+  $("ctx-ontop-label").textContent = d.ui.alwaysOnTop;
+  $("ctx-demo").textContent = demoPlaying ? d.ui.demoPause : d.ui.demoPlay;
+  $("ctx-step").textContent = d.ui.demoStep;
+  $("ctx-reset").textContent = d.ui.demoReset;
+  $("ctx-quit").textContent = d.ui.quit;
+
+  $("insp-title").textContent = d.appName;
+  $("insp-tag").textContent = d.tagline;
+  $("insp-close").textContent = d.ui.closeInspector;
+  $("insp-skins-title").textContent = d.ui.skins;
+  $("label-progress").textContent = d.ui.progress;
+  $("label-host").textContent = d.ui.host;
+  $("label-version").textContent = d.ui.version;
+  $("host-value").textContent = d.ui.hostClaude;
+  $("btn-step").textContent = d.ui.demoStep;
+  $("btn-reset").textContent = d.ui.demoReset;
+  $("btn-play").textContent = demoPlaying ? d.ui.demoPause : d.ui.demoPlay;
+  $("btn-import").textContent = d.ui.importImage;
+  $("btn-import-pixel").textContent = d.ui.importPixel;
+  $("btn-delete-skin").textContent = d.ui.deleteSkin;
+  $("label-pixel-size").textContent = d.ui.pixelSize;
+  $("label-pixel-colors").textContent = d.ui.pixelColors;
+  $("label-subject-only").textContent = d.ui.subjectOnly;
+  $("label-quality").textContent = d.ui.quality;
+  $("q-fine").textContent = d.ui.qualityFine;
+  $("q-standard").textContent = d.ui.qualityStandard;
+  $("q-chunky").textContent = d.ui.qualityChunky;
+  const dollHint = document.getElementById("hint-doll-mode");
+  if (dollHint) dollHint.textContent = d.ui.dollModeHint;
+  const delHint = document.getElementById("hint-delete-skin");
+  if (delHint) delHint.textContent = d.ui.deleteSkinHint;
+  const ctxDel = document.getElementById("ctx-delete-hint");
+  if (ctxDel) ctxDel.textContent = d.ui.deleteSkinHint;
+  document.querySelectorAll(".quality-btn").forEach((el) => {
+    el.classList.toggle(
+      "active",
+      (el as HTMLElement).dataset.quality === pixelQuality,
+    );
+  });
+  $("drag-hint").textContent = d.ui.dragHint;
+  let liveLine = getClaudeAdapterStatus().message;
+  if (liveSource && Date.now() - liveAt < 300_000) {
+    const ago = Math.round((Date.now() - liveAt) / 1000);
+    liveLine =
+      (getLocale() === "zh-CN"
+        ? `● 已检测到 Claude 事件（${ago}s 前）· ${liveSource}\n最近：${latest?.title ?? "—"}\n拖动/换肤不受影响`
+        : `● Claude event ${ago}s ago · ${liveSource}\nLast: ${latest?.title ?? "—"}\nDrag/skins still work`) +
+      "\n" +
+      liveLine;
+  } else if (getLocale() === "zh-CN") {
+    liveLine =
+      "若 Claude 在干活但这里一直空闲：可能是事件被过早清掉（已修复），请重启 PetDeck 后再试。\n" +
+      liveLine;
+  }
+  $("adapter-hint").textContent = liveLine;
+
+  $("pixel-size-val").textContent = String(
+    ($("pixel-size") as unknown as HTMLInputElement).value,
+  );
+  $("pixel-colors-val").textContent = String(
+    ($("pixel-colors") as unknown as HTMLInputElement).value,
+  );
+
+  if (latest) renderEvent(latest);
+  else {
+    $("status-title").textContent = d.ui.noEvent;
+    $("status-detail").textContent = "";
+    $("state-pill").textContent = d.state.idle;
+    updateBubble(null);
+    refreshSkin();
+  }
+  renderSkinLists();
+  updateConnPanel();
+}
+
+function stateLabel(state: AgentState): string {
+  return t().state[state] ?? state;
+}
+
+function shouldShowBubbleFor(state: AgentState | undefined): boolean {
+  if (!showBubble || !state) return false;
+  if (state === "idle") return false;
+  return true;
+}
+
+function updateBubble(event: AgentEvent | null) {
+  const bubble = $("bubble");
+  if (!event || !shouldShowBubbleFor(event.state)) {
+    bubble.classList.add("hidden");
+    return;
+  }
+
+  bubble.classList.remove("hidden");
+  bubble.dataset.state = event.state;
+  const sessEl = document.getElementById("bubble-session");
+  if (sessEl) {
+    const label = event.sessionLabel || event.sessionId?.slice(-6) || "";
+    sessEl.textContent = event.source
+      ? `${event.source}${label ? " · " + label : ""}`
+      : label;
+  }
+  $("bubble-state").textContent = stateLabel(event.state);
+  $("bubble-title").textContent = event.title || stateLabel(event.state);
+  $("bubble-detail").textContent = event.detail ?? "";
+
+  const wrap = $("bubble-progress-wrap");
+  const bar = $("bubble-progress-bar");
+  const kind = event.progress?.kind ?? "none";
+  if (kind === "none") {
+    wrap.classList.add("hidden");
+  } else {
+    wrap.classList.remove("hidden");
+    wrap.classList.toggle("indeterminate", kind === "indeterminate");
+    if (kind === "ratio") {
+      const v = Math.max(0, Math.min(1, event.progress?.value ?? 0));
+      bar.style.width = `${Math.round(v * 100)}%`;
+    } else {
+      bar.style.width = "40%";
+    }
+  }
+
+  if (idleHideTimer) clearTimeout(idleHideTimer);
+  if (event.state === "success") {
+    idleHideTimer = setTimeout(() => {
+      if (latest?.state === "success") bubble.classList.add("hidden");
+    }, 2800);
+  }
+}
+
+const VALID_STATES = new Set<AgentState>([
+  "idle",
+  "thinking",
+  "tool_call",
+  "editing",
+  "waiting_user",
+  "running_tests",
+  "success",
+  "error",
+]);
+
+function normalizeAgentEvent(raw: unknown): AgentEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const state = String(o.state ?? "") as AgentState;
+  if (!VALID_STATES.has(state)) return null;
+  const stickyRaw = o.stickyMs ?? o.sticky_ms;
+  return {
+    schema: "petdeck.event.v1",
+    source: String(o.source ?? "claude-code"),
+    sessionId: String(o.sessionId ?? o.session_id ?? "session"),
+    ts: String(o.ts ?? new Date().toISOString()),
+    state,
+    title: String(o.title ?? state).slice(0, 120),
+    detail: o.detail != null ? String(o.detail).slice(0, 200) : undefined,
+    progress:
+      o.progress && typeof o.progress === "object"
+        ? (o.progress as AgentEvent["progress"])
+        : { kind: "indeterminate" },
+    needsAttention: Boolean(o.needsAttention ?? o.needs_attention),
+    stickyMs:
+      typeof stickyRaw === "number"
+        ? stickyRaw
+        : stickyRaw != null
+          ? Number(stickyRaw)
+          : undefined,
+    sessionLabel:
+      o.sessionLabel != null
+        ? String(o.sessionLabel)
+        : o.session_label != null
+          ? String(o.session_label)
+          : undefined,
+  };
+}
+
+const sessionIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleAutoIdle(event: AgentEvent) {
+  const sid = event.sessionId;
+  const prev = sessionIdleTimers.get(sid);
+  if (prev) clearTimeout(prev);
+
+  if (event.state === "waiting_user" || event.state === "error") return;
+  if (event.state === "idle") {
+    void fitPetWindow();
+    return;
+  }
+
+  /**
+   * Critical fix: while Claude is mid-tool (read/edit/bash), do NOT clear to idle
+   * after a few seconds — wait for PostToolUse / Stop. Only a long safety timeout.
+   * Previously sticky ~4–8s made long reads look like "never detected".
+   */
+  let ms = event.stickyMs ?? 0;
+  if (!ms || Number.isNaN(ms)) {
+    if (event.state === "success") ms = 2200;
+    else if (event.state === "thinking") ms = 45_000;
+    else if (
+      event.state === "tool_call" ||
+      event.state === "editing" ||
+      event.state === "running_tests"
+    ) {
+      ms = 15 * 60_000; // 15 min safety only
+    } else ms = 30_000;
+  }
+  // Honor long sticky from bridge; bump short sticky for tool states
+  if (
+    (event.state === "tool_call" ||
+      event.state === "editing" ||
+      event.state === "running_tests") &&
+    ms < 60_000
+  ) {
+    ms = 15 * 60_000;
+  }
+
+  const eventKey = `${sid}|${event.ts}|${event.state}|${event.title}`;
+  const timer = setTimeout(() => {
+    sessionIdleTimers.delete(sid);
+    // Only clear if this session still shows the same busy event
+    const slotsNow = listSessions();
+    const cur = slotsNow.find((s) => s.id === sid);
+    if (!cur) return;
+    const same =
+      cur.event.state === event.state &&
+      cur.event.title === event.title &&
+      (Date.now() - cur.updatedAt >= ms - 500);
+    if (!same && cur.event.state !== event.state) return;
+    if (cur.event.state === "waiting_user" || cur.event.state === "error") return;
+    if (cur.event.state === "idle") return;
+
+    const idle: AgentEvent = {
+      schema: "petdeck.event.v1",
+      source: event.source,
+      sessionId: sid,
+      sessionLabel: event.sessionLabel,
+      ts: new Date().toISOString(),
+      state: "idle",
+      title: "Ready",
+      detail: "Timed out waiting for next event",
+      progress: { kind: "none" },
+      needsAttention: false,
+    };
+    const slots = markIdle(sid, idle);
+    const primary = primarySession();
+    renderSessions(slots);
+    if (primary) {
+      latest = primary.event;
+      renderEvent(primary.event);
+    } else {
+      latest = idle;
+      renderEvent(idle);
+    }
+    void fitPetWindow();
+    applyI18n();
+  }, ms);
+  sessionIdleTimers.set(sid, timer);
+  void eventKey;
+}
+
+function renderSessions(slots = listSessions()) {
+  const stack = document.getElementById("session-stack");
+  if (!stack) return;
+
+  // Primary = most recent — shown in main bubble; extras in stack
+  const [primary, ...rest] = slots;
+  stack.innerHTML = "";
+
+  if (primary) {
+    const sessEl = document.getElementById("bubble-session");
+    if (sessEl) {
+      sessEl.textContent = `${primary.source} · ${primary.label}`;
+      sessEl.classList.toggle("hidden", false);
+    }
+  }
+
+  for (const s of rest.slice(0, 4)) {
+    if (s.event.state === "idle" && Date.now() - s.updatedAt > 8000) continue;
+    const card = document.createElement("div");
+    card.className = "session-card";
+    card.dataset.state = s.event.state;
+    card.innerHTML = `
+      <div class="sc-head"><span>${escapeHtml(s.source)}</span><span>#${escapeHtml(s.label)}</span></div>
+      <div class="sc-title">${escapeHtml(s.event.title || s.event.state)}</div>
+      ${s.event.detail ? `<div class="sc-detail">${escapeHtml(s.event.detail)}</div>` : ""}
+    `;
+    stack.appendChild(card);
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Dedup key so emit + poll do not double-apply the same event. */
+const seenEventKeys = new Set<string>();
+let lastPulledSeq = 0;
+
+function eventDedupeKey(raw: unknown, event: AgentEvent): string {
+  if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    if (o._seq != null) return `seq:${o._seq}`;
+  }
+  return `${event.sessionId}|${event.ts}|${event.state}|${event.title}|${event.detail ?? ""}`;
+}
+
+/** Live events from bridge stop the demo player so real status wins. */
+function ingestLiveEvent(raw: unknown) {
+  const event = normalizeAgentEvent(raw);
+  if (!event) {
+    console.warn("[petdeck] drop event (normalize failed)", raw);
+    return;
+  }
+  const key = eventDedupeKey(raw, event);
+  if (seenEventKeys.has(key)) return;
+  seenEventKeys.add(key);
+  if (seenEventKeys.size > 200) {
+    const first = seenEventKeys.values().next().value;
+    if (first) seenEventKeys.delete(first);
+  }
+
+  if (demoPlaying) {
+    player.pause();
+    demoPlaying = false;
+  }
+  liveSource = event.source;
+  liveAt = Date.now();
+
+  // Track ring seq if present
+  if (raw && typeof raw === "object") {
+    const seq = Number((raw as Record<string, unknown>)._seq);
+    if (Number.isFinite(seq) && seq > lastPulledSeq) lastPulledSeq = seq;
+  }
+
+  console.log(
+    "[petdeck] UI event",
+    event.state,
+    event.title,
+    event.sessionLabel ?? event.sessionId.slice(-6),
+  );
+
+  const slots = upsertSession(event);
+  const primary = primarySession();
+  if (primary) {
+    latest = primary.event;
+    renderEvent(primary.event);
+  } else {
+    renderEvent(event);
+  }
+  renderSessions(slots);
+  scheduleAutoIdle(event);
+  updateConnPanel();
+  void fitPetWindow();
+  applyI18n();
+}
+
+/**
+ * Poll ring buffer every 250ms — survives lost Tauri emits.
+ * Also tries HTTP /events if invoke fails (e.g. webview edge cases).
+ */
+async function pollAgentEvents() {
+  if (!isTauri()) {
+    // Browser / fallback: HTTP poll
+    try {
+      const r = await fetch(
+        `http://127.0.0.1:7788/events?after=${lastPulledSeq}`,
+      );
+      if (!r.ok) return;
+      const data = (await r.json()) as { lastSeq?: number; events?: unknown[] };
+      for (const ev of data.events ?? []) ingestLiveEvent(ev);
+      if (typeof data.lastSeq === "number" && data.lastSeq > lastPulledSeq) {
+        lastPulledSeq = data.lastSeq;
+      }
+    } catch {
+      /* bridge down */
+    }
+    return;
+  }
+
+  try {
+    const data = await invoke<{ lastSeq: number; events: unknown[] }>(
+      "pull_agent_events",
+      { afterSeq: lastPulledSeq },
+    );
+    for (const ev of data.events ?? []) ingestLiveEvent(ev);
+    if (typeof data.lastSeq === "number" && data.lastSeq > lastPulledSeq) {
+      lastPulledSeq = data.lastSeq;
+    }
+  } catch (e) {
+    // Fallback HTTP
+    try {
+      const r = await fetch(
+        `http://127.0.0.1:7788/events?after=${lastPulledSeq}`,
+      );
+      if (!r.ok) return;
+      const data = (await r.json()) as { lastSeq?: number; events?: unknown[] };
+      for (const ev of data.events ?? []) ingestLiveEvent(ev);
+      if (typeof data.lastSeq === "number" && data.lastSeq > lastPulledSeq) {
+        lastPulledSeq = data.lastSeq;
+      }
+    } catch {
+      void e;
+    }
+  }
+}
+
+function renderEvent(event: AgentEvent) {
+  latest = event;
+  applySkinToDom($("pet"), getActiveSkin(), event.state);
+  updateBubble(event);
+
+  const dict = t();
+  const pill = $("state-pill");
+  pill.textContent = stateLabel(event.state);
+  pill.dataset.state = event.state;
+  $("status-title").textContent = event.title || stateLabel(event.state);
+  $("status-detail").textContent = event.detail ?? dict.petMood[event.state];
+  $("source-label").textContent =
+    event.source === "claude-code"
+      ? dict.source["claude-code"]
+      : event.source;
+
+  const track = $("progress-track");
+  const bar = $("progress-bar");
+  const progressText = $("progress-text");
+  const kind = event.progress?.kind ?? "none";
+  track.classList.toggle("indeterminate", kind === "indeterminate");
+  if (kind === "ratio") {
+    const v = Math.max(0, Math.min(1, event.progress?.value ?? 0));
+    bar.style.width = `${Math.round(v * 100)}%`;
+    progressText.textContent = `${Math.round(v * 100)}%`;
+  } else if (kind === "indeterminate") {
+    bar.style.width = "40%";
+    progressText.textContent = "…";
+  } else {
+    bar.style.width = "0%";
+    progressText.textContent = "—";
+  }
+}
+
+let menuOpen = false;
+
+async function hideCtx() {
+  $("ctx").classList.add("hidden");
+  document.body.classList.remove("menu-open");
+  if (menuOpen) {
+    menuOpen = false;
+    // only shrink if not in inspector
+    if (!$("inspector").classList.contains("hidden")) return;
+    await resizeTo("pet");
+  }
+}
+
+async function showCtx(_x: number, _y: number) {
+  renderSkinLists();
+  const menu = $("ctx");
+  menuOpen = true;
+  document.body.classList.add("menu-open");
+  // Grow window first so the full menu (with scroll) fits
+  await resizeTo("menu");
+  menu.classList.remove("hidden");
+  // Panel mode: fill the expanded window, scroll inside
+  menu.style.left = "0";
+  menu.style.top = "0";
+  menu.style.right = "0";
+  menu.style.bottom = "0";
+  menu.style.width = "100%";
+  menu.style.height = "100%";
+  // focus menu so wheel scroll works reliably
+  menu.focus({ preventScroll: true });
+}
+
+async function openInspector() {
+  await hideCtx();
+  document.body.classList.add("mode-inspector");
+  $("inspector").classList.remove("hidden");
+  $("shell").classList.add("hidden");
+  await resizeTo("inspector");
+  applyI18n();
+}
+
+async function closeInspector() {
+  document.body.classList.remove("mode-inspector");
+  $("inspector").classList.add("hidden");
+  $("shell").classList.remove("hidden");
+  await resizeTo("pet");
+  applyI18n();
+}
+
+async function quitApp() {
+  await persistPosition();
+  if (!isTauri()) {
+    window.close();
+    return;
+  }
+  try {
+    await (await win()).close();
+  } catch {
+    /* ignore */
+  }
+}
+
+function toggleDemo() {
+  if (demoPlaying) {
+    player.pause();
+    demoPlaying = false;
+  } else {
+    player.play(1500);
+    demoPlaying = true;
+  }
+  applyI18n();
+}
+
+function applyQualityPreset(q: PixelQuality) {
+  pixelQuality = q;
+  applyI18n();
+}
+
+function stageLabel(stage: string): string {
+  const d = t().ui;
+  switch (stage) {
+    case "load":
+      return d.stageLoad;
+    case "isolate":
+      return d.stageIsolate;
+    case "analyze":
+      return d.stageAnalyze;
+    case "draw":
+      return d.stageDraw;
+    case "done":
+      return d.stageDone;
+    default:
+      return d.pixelWorking;
+  }
+}
+
+async function importImage(asPixel: boolean) {
+  const input = $(asPixel ? "file-pixel" : "file-import") as unknown as HTMLInputElement;
+  input.value = "";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const d = t();
+    try {
+      let dataUrl = await fileToDataUrl(file);
+      let pixelated = false;
+
+      if (asPixel) {
+        setWorkProgress(0.02, d.ui.pixelWorking);
+        const subjectOnly = ($("opt-subject") as unknown as HTMLInputElement)
+          .checked;
+        // Doll width by quality preset
+        const width =
+          pixelQuality === "fine" ? 40 : pixelQuality === "standard" ? 32 : 24;
+        dataUrl = await makePixelDollFromImage(dataUrl, {
+          isolate: subjectOnly,
+          width,
+          onProgress: (stage, ratio) => {
+            setWorkProgress(ratio, stageLabel(stage));
+          },
+        });
+        pixelated = true;
+      } else {
+        dataUrl = await normalizeImport(dataUrl, 360);
+      }
+
+      const base = file.name.replace(/\.[^.]+$/, "").slice(0, 24) || "Custom";
+      const skin: SkinMeta = {
+        id: makeCustomId(asPixel ? "doll" : "img"),
+        nameEn: base,
+        nameZh: base,
+        kind: "image",
+        builtin: false,
+        imageDataUrl: dataUrl,
+        pixelated,
+        createdAt: new Date().toISOString(),
+      };
+      addCustomSkin(skin);
+      setActiveSkinId(skin.id);
+      refreshSkin();
+      showToast(asPixel ? d.ui.pixelOk : d.ui.importOk);
+    } catch (err) {
+      console.error(err);
+      showToast(d.ui.importFail);
+    } finally {
+      hideWorkProgress();
+    }
+  };
+  input.click();
+}
+
+function wireUi() {
+  const petHit = $("pet-hit");
+
+  // Explicit drag — data-tauri-drag-region is unreliable on transparent Win windows
+  petHit.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    if (menuOpen) return;
+    if (!$("inspector").classList.contains("hidden")) return;
+    startWindowDrag();
+  });
+  petHit.addEventListener("pointerup", () => {
+    void persistPosition();
+  });
+
+  petHit.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void showCtx(e.clientX, e.clientY);
+  });
+
+  $("shell").addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    void showCtx(e.clientX, e.clientY);
+  });
+
+  // Close menu when clicking the dimmed shell behind (if any)
+  document.addEventListener("click", (e) => {
+    const ctx = $("ctx");
+    if (ctx.classList.contains("hidden")) return;
+    if (ctx.contains(e.target as Node)) return;
+    void hideCtx();
+  });
+
+  // Escape closes menu
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && menuOpen) void hideCtx();
+  });
+
+  $("ctx").addEventListener("click", async (e) => {
+    const btn = (e.target as HTMLElement).closest("[data-action]") as
+      | HTMLElement
+      | null;
+    if (!btn) return;
+    const action = btn.dataset.action;
+
+    if (action === "skin" && btn.dataset.skinId) {
+      setActiveSkinId(btn.dataset.skinId);
+      refreshSkin();
+      await hideCtx();
+      return;
+    }
+
+    if (action === "close-menu") {
+      await hideCtx();
+      return;
+    }
+
+    switch (action) {
+      case "toggle-bubble":
+        showBubble = !showBubble;
+        saveSettings({ showBubble });
+        updateBubble(latest);
+        await hideCtx();
+        applyI18n();
+        break;
+      case "more":
+        await openInspector();
+        break;
+      case "lang-zh":
+        setLocale("zh-CN");
+        saveSettings({ locale: "zh-CN" });
+        applyI18n();
+        await hideCtx();
+        break;
+      case "lang-en":
+        setLocale("en");
+        saveSettings({ locale: "en" });
+        applyI18n();
+        await hideCtx();
+        break;
+      case "import":
+        await hideCtx();
+        await importImage(false);
+        break;
+      case "import-pixel":
+        await hideCtx();
+        await importImage(true);
+        break;
+      case "demo-play":
+        toggleDemo();
+        await hideCtx();
+        break;
+      case "demo-step":
+        player.pause();
+        demoPlaying = false;
+        player.step();
+        applyI18n();
+        await hideCtx();
+        break;
+      case "demo-reset":
+        player.stop();
+        demoPlaying = false;
+        player.load(buildDemoEvents());
+        {
+          const first = player.current();
+          if (first) renderEvent(first);
+        }
+        applyI18n();
+        await hideCtx();
+        break;
+      case "quit":
+        await quitApp();
+        break;
+      default:
+        break;
+    }
+  });
+
+  const onTop = $("ctx-ontop") as unknown as HTMLInputElement;
+  onTop.addEventListener("change", () => {
+    void setAlwaysOnTop(onTop.checked);
+  });
+
+  const inspHead = document.querySelector(".insp-head") as HTMLElement | null;
+  inspHead?.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button")) return;
+    startWindowDrag();
+  });
+
+  $("insp-close").addEventListener("click", () => void closeInspector());
+  $("btn-play").addEventListener("click", () => toggleDemo());
+  $("btn-step").addEventListener("click", () => {
+    player.pause();
+    demoPlaying = false;
+    player.step();
+    applyI18n();
+  });
+  $("btn-reset").addEventListener("click", () => {
+    player.stop();
+    demoPlaying = false;
+    player.load(buildDemoEvents());
+    const first = player.current();
+    if (first) renderEvent(first);
+    applyI18n();
+  });
+
+  $("btn-import").addEventListener("click", () => void importImage(false));
+  $("btn-import-pixel").addEventListener("click", () => void importImage(true));
+  $("btn-delete-skin").addEventListener("click", () => {
+    const skin = getActiveSkin();
+    if (skin.builtin) {
+      showToast(t().ui.cannotDeleteBuiltin);
+      return;
+    }
+    // Show popup near button for consistency
+    const rect = $("btn-delete-skin").getBoundingClientRect();
+    showSkinPop(skin.id, rect.left, rect.bottom + 4);
+  });
+
+  $("skin-pop-delete").addEventListener("click", (e) => {
+    e.stopPropagation();
+    confirmDeleteSkin();
+  });
+  $("skin-pop-cancel").addEventListener("click", (e) => {
+    e.stopPropagation();
+    hideSkinPop();
+  });
+  document.addEventListener("click", (e) => {
+    const pop = document.getElementById("skin-pop");
+    if (!pop || pop.classList.contains("hidden")) return;
+    if (pop.contains(e.target as Node)) return;
+    hideSkinPop();
+  });
+
+  document.querySelectorAll(".quality-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const q = (btn as HTMLElement).dataset.quality as PixelQuality;
+      if (q) applyQualityPreset(q);
+    });
+  });
+
+  petHit.addEventListener("dblclick", () => void openInspector());
+}
+
+async function boot() {
+  const settings = loadSettings();
+  showBubble = settings.showBubble;
+
+  if (settings.locale === "en" || settings.locale === "zh-CN") {
+    setLocale(settings.locale);
+  } else {
+    setLocale(getLocale());
+  }
+
+  ($("ctx-ontop") as unknown as HTMLInputElement).checked =
+    settings.alwaysOnTop;
+
+  player.load(buildDemoEvents());
+  player.onEvent(renderEvent);
+  const first = player.current();
+  if (first) renderEvent(first);
+  else refreshSkin();
+
+  wireUi();
+  applyQualityPreset("fine");
+  applyI18n();
+
+  await resizeTo("pet");
+  await setAlwaysOnTop(settings.alwaysOnTop);
+  await restorePosition();
+
+  updateConnPanel();
+
+  // Always poll — primary reliability path for pet UI updates
+  setInterval(() => void pollAgentEvents(), 250);
+  void pollAgentEvents();
+
+  if (isTauri()) {
+    setInterval(() => void persistPosition(), 2000);
+
+    try {
+      await listen("agent-event", (ev) => {
+        console.log("[petdeck] listen agent-event");
+        ingestLiveEvent(ev.payload);
+      });
+      await listen("bridge-status", (ev) => {
+        const p = ev.payload as { ok?: boolean; error?: string };
+        setBridgeStatus(Boolean(p?.ok), p?.error);
+        applyI18n();
+      });
+      await listen<ClaudePresence>("claude-presence", (ev) => {
+        onClaudePresence(ev.payload);
+      });
+      // Initial snapshot
+      try {
+        const snap = await invoke<ClaudePresence>("claude_presence_snapshot");
+        onClaudePresence(snap);
+      } catch {
+        /* ignore */
+      }
+      // Presence poll backup (if emit drops)
+      setInterval(async () => {
+        try {
+          const snap = await invoke<ClaudePresence>("claude_presence_snapshot");
+          onClaudePresence({
+            ...snap,
+            justConnected: false,
+            justDisconnected: false,
+          });
+        } catch {
+          /* ignore */
+        }
+      }, 2000);
+      setTimeout(async () => {
+        try {
+          const r = await fetch("http://127.0.0.1:7788/health");
+          setBridgeStatus(r.ok);
+        } catch {
+          setBridgeStatus(false, "health fetch failed");
+        }
+        applyI18n();
+      }, 600);
+    } catch (e) {
+      console.warn("[petdeck] tauri listen setup failed", e);
+    }
+  }
+}
+
+boot();

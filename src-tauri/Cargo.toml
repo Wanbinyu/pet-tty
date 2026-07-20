@@ -1,0 +1,20 @@
+[package]
+name = "petdeck"
+version = "0.3.0"
+description = "Desktop pet for Claude Code — progress, tasks, mood"
+authors = ["PetDeck"]
+edition = "2021"
+
+[lib]
+name = "petdeck_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"

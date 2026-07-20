@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PetDeck</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div id="shell" class="shell">
+      <!-- Always-visible connection / activity panel -->
+      <div id="conn-panel" class="conn-panel conn-offline" role="status" aria-live="polite">
+        <div class="conn-dot" aria-hidden="true"></div>
+        <div class="conn-body">
+          <div class="conn-title" id="conn-title">未连接 Claude</div>
+          <div class="conn-sub" id="conn-sub">启动 Claude 终端后将自动检测</div>
+        </div>
+      </div>
+
+      <!-- One-shot toast when Claude is first seen -->
+      <div id="conn-toast" class="conn-toast hidden" role="alert">已检测到 Claude</div>
+
+      <div id="bubble" class="bubble hidden" role="status" aria-live="polite">
+        <div class="bubble-session" id="bubble-session"></div>
+        <div class="bubble-state" id="bubble-state"></div>
+        <div class="bubble-title" id="bubble-title"></div>
+        <div class="bubble-detail" id="bubble-detail"></div>
+        <div class="bubble-progress hidden" id="bubble-progress-wrap">
+          <div class="bubble-progress-bar" id="bubble-progress-bar"></div>
+        </div>
+      </div>
+
+      <!-- Extra sessions (2nd, 3rd Claude / Grok…) -->
+      <div id="session-stack" class="session-stack" aria-live="polite"></div>
+
+      <div id="pet-hit" class="pet-hit" title="PetDeck">
+        <div id="pet" class="pet pet--idle theme-ember" aria-label="Pet">
+          <div class="pet-shadow"></div>
+          <div class="pet-css">
+            <div class="pet-body">
+              <div class="pet-ear pet-ear--l"></div>
+              <div class="pet-ear pet-ear--r"></div>
+              <div class="pet-face" id="pet-face">·ᴗ·</div>
+              <div class="pet-belly"></div>
+              <div class="pet-pixel-face" aria-hidden="true"></div>
+            </div>
+          </div>
+          <img class="pet-img hidden" id="pet-img" alt="" draggable="false" />
+          <div class="pet-spark" id="pet-spark" aria-hidden="true"></div>
+        </div>
+        <div id="attention-dot" class="attention-dot hidden"></div>
+      </div>
+    </div>
+
+    <nav id="ctx" class="ctx hidden" role="menu" tabindex="-1">
+      <div class="ctx-head">
+        <span id="ctx-head-title">Menu</span>
+        <button type="button" class="ctx-close" data-action="close-menu" id="ctx-close" aria-label="Close">×</button>
+      </div>
+      <button type="button" class="ctx-item" data-action="toggle-bubble" id="ctx-bubble"></button>
+      <button type="button" class="ctx-item" data-action="more" id="ctx-more"></button>
+      <div class="ctx-sep"></div>
+      <div class="ctx-label" id="ctx-lang-label"></div>
+      <button type="button" class="ctx-item" data-action="lang-zh" id="ctx-zh"></button>
+      <button type="button" class="ctx-item" data-action="lang-en" id="ctx-en"></button>
+      <div class="ctx-sep"></div>
+      <div class="ctx-label" id="ctx-skins-label"></div>
+      <div id="ctx-skin-list" class="ctx-skin-list"></div>
+      <button type="button" class="ctx-item" data-action="import" id="ctx-import"></button>
+      <button type="button" class="ctx-item" data-action="import-pixel" id="ctx-import-pixel"></button>
+      <p class="ctx-hint" id="ctx-delete-hint"></p>
+      <label class="ctx-check">
+        <input type="checkbox" id="ctx-ontop" />
+        <span id="ctx-ontop-label"></span>
+      </label>
+      <div class="ctx-sep"></div>
+      <button type="button" class="ctx-item" data-action="demo-play" id="ctx-demo"></button>
+      <button type="button" class="ctx-item" data-action="demo-step" id="ctx-step"></button>
+      <button type="button" class="ctx-item" data-action="demo-reset" id="ctx-reset"></button>
+      <div class="ctx-sep"></div>
+      <button type="button" class="ctx-item ctx-danger" data-action="quit" id="ctx-quit"></button>
+    </nav>
+
+    <input type="file" id="file-import" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden-file" />
+    <input type="file" id="file-pixel" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden-file" />
+
+    <div id="inspector" class="inspector hidden">
+      <header class="insp-head" data-tauri-drag-region>
+        <div>
+          <strong id="insp-title">PetDeck</strong>
+          <span class="muted" id="insp-tag"></span>
+        </div>
+        <button type="button" class="btn" id="insp-close"></button>
+      </header>
+      <div class="insp-body">
+        <section class="insp-section">
+          <div class="status-row">
+            <span class="pill" id="state-pill">idle</span>
+            <span class="muted" id="source-label"></span>
+          </div>
+          <h2 class="status-title" id="status-title"></h2>
+          <p class="status-detail" id="status-detail"></p>
+          <div class="progress-wrap">
+            <div class="progress-label">
+              <span id="label-progress"></span>
+              <span id="progress-text" class="muted"></span>
+            </div>
+            <div class="progress-track" id="progress-track">
+              <div class="progress-bar" id="progress-bar"></div>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="btn-play"></button>
+            <button type="button" class="btn" id="btn-step"></button>
+            <button type="button" class="btn" id="btn-reset"></button>
+          </div>
+        </section>
+
+        <section class="insp-section">
+          <h3 class="insp-h3" id="insp-skins-title"></h3>
+          <div id="skin-grid" class="skin-grid"></div>
+          <div class="btn-row">
+            <button type="button" class="btn" id="btn-import"></button>
+            <button type="button" class="btn" id="btn-import-pixel"></button>
+            <button type="button" class="btn ctx-danger-btn" id="btn-delete-skin"></button>
+          </div>
+          <div class="pixel-tools">
+            <p class="hint muted" id="hint-doll-mode"></p>
+            <label class="ctx-check field-check">
+              <input type="checkbox" id="opt-subject" checked />
+              <span id="label-subject-only"></span>
+            </label>
+            <div class="quality-row">
+              <span id="label-quality" class="muted"></span>
+              <div class="quality-btns">
+                <button type="button" class="btn quality-btn active" data-quality="fine" id="q-fine"></button>
+                <button type="button" class="btn quality-btn" data-quality="standard" id="q-standard"></button>
+                <button type="button" class="btn quality-btn" data-quality="chunky" id="q-chunky"></button>
+              </div>
+            </div>
+            <p class="hint muted" id="hint-delete-skin"></p>
+          </div>
+          <p class="hint" id="skin-toast"></p>
+        </section>
+
+        <section class="insp-section">
+          <div class="meta-line">
+            <span id="label-host" class="muted"></span>
+            <strong id="host-value"></strong>
+          </div>
+          <div class="meta-line">
+            <span id="label-version" class="muted"></span>
+            <span id="version-value">0.3.0</span>
+          </div>
+          <p class="hint" id="adapter-hint"></p>
+          <p class="hint muted" id="drag-hint"></p>
+        </section>
+      </div>
+    </div>
+
+    <!-- Progress overlay (import / doll build) -->
+    <div id="work-overlay" class="work-overlay hidden">
+      <div class="work-card">
+        <div class="work-label" id="work-label">…</div>
+        <div class="work-track">
+          <div class="work-bar" id="work-bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Skin action popup (right-click custom skin) -->
+    <div id="skin-pop" class="skin-pop hidden" role="menu">
+      <div class="skin-pop-name" id="skin-pop-name"></div>
+      <button type="button" class="ctx-item ctx-danger" id="skin-pop-delete"></button>
+      <button type="button" class="ctx-item" id="skin-pop-cancel"></button>
+    </div>
+  </body>
+</html>

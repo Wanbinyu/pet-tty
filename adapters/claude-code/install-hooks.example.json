@@ -1,0 +1,65 @@
+{
+  "$comment": "Merge into Claude Code settings (user or project). Paths must be absolute on your machine.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"G:/skill/petdeck/adapters/claude-code/petdeck-hook.mjs\"",
+            "env": {
+              "PETDECK_HOOK": "PreToolUse",
+              "PETDECK_URL": "http://127.0.0.1:7788/event"
+            }
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"G:/skill/petdeck/adapters/claude-code/petdeck-hook.mjs\"",
+            "env": {
+              "PETDECK_HOOK": "PostToolUse",
+              "PETDECK_URL": "http://127.0.0.1:7788/event"
+            }
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"G:/skill/petdeck/adapters/claude-code/petdeck-hook.mjs\"",
+            "env": {
+              "PETDECK_HOOK": "Notification",
+              "PETDECK_URL": "http://127.0.0.1:7788/event"
+            }
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"G:/skill/petdeck/adapters/claude-code/petdeck-hook.mjs\"",
+            "env": {
+              "PETDECK_HOOK": "Stop",
+              "PETDECK_URL": "http://127.0.0.1:7788/event"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
