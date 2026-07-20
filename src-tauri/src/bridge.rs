@@ -66,7 +66,7 @@ fn ring() -> &'static Mutex<EventRing> {
     RING.get_or_init(|| Mutex::new(EventRing::new()))
 }
 
-/// Store + emit so UI never depends on a single delivery path.
+/// Store + emit + direct webview eval so UI never depends on a single path.
 fn publish_event(app: &AppHandle, event: Value) {
     let (seq, stored) = {
         let mut g = ring().lock().unwrap_or_else(|e| e.into_inner());
@@ -74,15 +74,28 @@ fn publish_event(app: &AppHandle, event: Value) {
     };
     eprintln!("[petdeck-bridge] publish seq={seq}");
 
-    // Global emit
+    // 1) Global emit
     if let Err(e) = app.emit("agent-event", &stored) {
         eprintln!("[petdeck-bridge] app.emit failed: {e}");
     }
-    // Window-targeted emit (more reliable on some Tauri 2 builds)
+    // 2) Window-targeted emit
     if let Some(w) = app.get_webview_window("main") {
         if let Err(e) = w.emit("agent-event", &stored) {
             eprintln!("[petdeck-bridge] window.emit failed: {e}");
         }
+        // 3) Direct JS inject — most reliable on Windows WebView2
+        //    (frontend must expose window.__petdeckIngest)
+        let js = format!(
+            "(function(){{try{{var p={};if(window.__petdeckIngest)window.__petdeckIngest(p);else window.__petdeckPending=(window.__petdeckPending||[]).concat([p]);}}catch(e){{console.error(e)}}}})()",
+            stored
+        );
+        if let Err(e) = w.eval(&js) {
+            eprintln!("[petdeck-bridge] webview.eval failed: {e}");
+        } else {
+            eprintln!("[petdeck-bridge] webview.eval ok seq={seq}");
+        }
+    } else {
+        eprintln!("[petdeck-bridge] no main window for eval");
     }
 }
 

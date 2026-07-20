@@ -1,8 +1,11 @@
 {
   "name": "petdeck",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
+  "bin": {
+    "pettty": "bin/pettty.mjs"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -10,7 +13,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pettty": "node bin/pettty.mjs",
+    "start": "node bin/pettty.mjs"
   },
   "dependencies": {
     "@imgly/background-removal": "^1.7.0",

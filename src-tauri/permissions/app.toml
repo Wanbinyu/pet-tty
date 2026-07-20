@@ -1,0 +1,26 @@
+# App command permissions (Tauri 2 ACL)
+
+[[permission]]
+identifier = "allow-app-info"
+description = "Allow app_info"
+commands.allow = ["app_info"]
+
+[[permission]]
+identifier = "allow-ui-log"
+description = "Allow ui_log (frontend → terminal)"
+commands.allow = ["ui_log"]
+
+[[permission]]
+identifier = "allow-bridge-info"
+description = "Allow bridge_info"
+commands.allow = ["bridge_info"]
+
+[[permission]]
+identifier = "allow-pull-agent-events"
+description = "Allow pull_agent_events poll"
+commands.allow = ["pull_agent_events"]
+
+[[permission]]
+identifier = "allow-claude-presence-snapshot"
+description = "Allow claude_presence_snapshot"
+commands.allow = ["claude_presence_snapshot"]

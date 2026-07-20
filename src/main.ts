@@ -94,19 +94,24 @@ function updateConnPanel() {
     "editing",
     "running_tests",
     "waiting_user",
+    "success",
+    "error",
   ]);
+  // Live bridge events count even without a Claude process (manual test / hooks)
   const activityBusy =
     latest != null &&
     busyStates.has(latest.state) &&
     liveSource != null &&
     Date.now() - liveAt < 120_000;
+  const hasLiveSignal =
+    claudeConnected ||
+    (liveSource != null && Date.now() - liveAt < 300_000);
 
-  if (activityBusy && claudeConnected) {
+  if (activityBusy) {
     connUi = "busy";
-  } else if (claudeConnected) {
+  } else if (hasLiveSignal || claudeConnected) {
     connUi = "online";
   } else if (connUi === "online" || connUi === "busy" || connUi === "closed") {
-    // stay on closed until reconnect (don't flash offline forever as "从未连接")
     connUi = "closed";
   } else {
     connUi = "offline";
@@ -115,28 +120,32 @@ function updateConnPanel() {
   panel.classList.add(`conn-${connUi}`);
 
   if (connUi === "offline") {
-    title.textContent = zh ? "未连接 Claude" : "Claude not connected";
+    title.textContent = zh ? "未连接" : "Not connected";
     sub.textContent = zh
-      ? "启动 Claude 终端后将自动检测"
-      : "Start Claude Code to connect";
+      ? "启动 Claude 或运行 pettty test"
+      : "Start Claude or run: pettty test";
   } else if (connUi === "online") {
-    title.textContent = zh ? "已连接 · 连接中" : "Connected";
+    title.textContent = zh ? "已连接 · 待命" : "Connected · idle";
     sub.textContent = zh
-      ? `${claudeLiveCount} 个终端 · 待命中（可拖动/换肤）`
-      : `${claudeLiveCount} session(s) · idle`;
+      ? claudeConnected
+        ? `${claudeLiveCount} 个终端 · 可拖动/换肤`
+        : "桥接在线 · 待命"
+      : claudeConnected
+        ? `${claudeLiveCount} session(s) · idle`
+        : "Bridge online · idle";
   } else if (connUi === "busy") {
     title.textContent = zh ? "执行中" : "Working";
     const st = latest ? stateLabel(latest.state) : "";
     sub.textContent = latest
       ? `${st} · ${latest.title}`
       : zh
-        ? "Claude 正在工作…"
-        : "Claude is working…";
+        ? "正在工作…"
+        : "Working…";
   } else {
     title.textContent = zh ? "对话已关闭" : "Session closed";
     sub.textContent = zh
-      ? "Claude 终端已退出 · 再次启动可重连"
-      : "Claude exited · start again to reconnect";
+      ? "再次启动 Claude 或 pettty test"
+      : "Start Claude or pettty test again";
   }
 }
 
@@ -733,11 +742,19 @@ function eventDedupeKey(raw: unknown, event: AgentEvent): string {
   return `${event.sessionId}|${event.ts}|${event.state}|${event.title}|${event.detail ?? ""}`;
 }
 
+function uiLog(msg: string) {
+  console.log("[pettty-ui]", msg);
+  if (!isTauri()) return;
+  void invoke("ui_log", { message: msg }).catch(() => {
+    /* ignore ACL / early boot */
+  });
+}
+
 /** Live events from bridge stop the demo player so real status wins. */
 function ingestLiveEvent(raw: unknown) {
   const event = normalizeAgentEvent(raw);
   if (!event) {
-    console.warn("[petdeck] drop event (normalize failed)", raw);
+    uiLog(`drop event (normalize failed): ${JSON.stringify(raw)?.slice(0, 120)}`);
     return;
   }
   const key = eventDedupeKey(raw, event);
@@ -761,12 +778,14 @@ function ingestLiveEvent(raw: unknown) {
     if (Number.isFinite(seq) && seq > lastPulledSeq) lastPulledSeq = seq;
   }
 
-  console.log(
-    "[petdeck] UI event",
-    event.state,
-    event.title,
-    event.sessionLabel ?? event.sessionId.slice(-6),
+  uiLog(
+    `applied ${event.state} · ${event.title} · ${event.sessionLabel ?? event.sessionId.slice(-6)}`,
   );
+
+  // Force bubble visible for live work (user may have toggled off demo idle)
+  if (event.state !== "idle") {
+    showBubble = true;
+  }
 
   const slots = upsertSession(event);
   const primary = primarySession();
@@ -783,29 +802,49 @@ function ingestLiveEvent(raw: unknown) {
   applyI18n();
 }
 
+// Bridge injects via webview.eval — works even when emit/listen fails
+declare global {
+  interface Window {
+    __petdeckIngest?: (raw: unknown) => void;
+    __petdeckPending?: unknown[];
+  }
+}
+window.__petdeckIngest = (raw: unknown) => {
+  try {
+    ingestLiveEvent(raw);
+  } catch (e) {
+    console.error("[pettty] ingest failed", e);
+  }
+};
+// Drain events injected before boot finished
+if (Array.isArray(window.__petdeckPending)) {
+  for (const p of window.__petdeckPending) ingestLiveEvent(p);
+  window.__petdeckPending = [];
+}
+
 /**
- * Poll ring buffer every 250ms — survives lost Tauri emits.
- * Also tries HTTP /events if invoke fails (e.g. webview edge cases).
+ * Poll ring buffer every 250ms — HTTP first (always works), then Tauri invoke.
  */
 async function pollAgentEvents() {
-  if (!isTauri()) {
-    // Browser / fallback: HTTP poll
-    try {
-      const r = await fetch(
-        `http://127.0.0.1:7788/events?after=${lastPulledSeq}`,
-      );
-      if (!r.ok) return;
+  // Prefer HTTP: proven path (same as send-test-event.ps1)
+  try {
+    const r = await fetch(
+      `http://127.0.0.1:7788/events?after=${lastPulledSeq}`,
+      { cache: "no-store" },
+    );
+    if (r.ok) {
       const data = (await r.json()) as { lastSeq?: number; events?: unknown[] };
       for (const ev of data.events ?? []) ingestLiveEvent(ev);
       if (typeof data.lastSeq === "number" && data.lastSeq > lastPulledSeq) {
         lastPulledSeq = data.lastSeq;
       }
-    } catch {
-      /* bridge down */
+      return;
     }
-    return;
+  } catch {
+    /* try invoke */
   }
 
+  if (!isTauri()) return;
   try {
     const data = await invoke<{ lastSeq: number; events: unknown[] }>(
       "pull_agent_events",
@@ -815,21 +854,8 @@ async function pollAgentEvents() {
     if (typeof data.lastSeq === "number" && data.lastSeq > lastPulledSeq) {
       lastPulledSeq = data.lastSeq;
     }
-  } catch (e) {
-    // Fallback HTTP
-    try {
-      const r = await fetch(
-        `http://127.0.0.1:7788/events?after=${lastPulledSeq}`,
-      );
-      if (!r.ok) return;
-      const data = (await r.json()) as { lastSeq?: number; events?: unknown[] };
-      for (const ev of data.events ?? []) ingestLiveEvent(ev);
-      if (typeof data.lastSeq === "number" && data.lastSeq > lastPulledSeq) {
-        lastPulledSeq = data.lastSeq;
-      }
-    } catch {
-      void e;
-    }
+  } catch {
+    /* bridge down */
   }
 }
 
@@ -1205,7 +1231,7 @@ function wireUi() {
 
 async function boot() {
   const settings = loadSettings();
-  showBubble = settings.showBubble;
+  showBubble = settings.showBubble !== false;
 
   if (settings.locale === "en" || settings.locale === "zh-CN") {
     setLocale(settings.locale);
@@ -1216,74 +1242,76 @@ async function boot() {
   ($("ctx-ontop") as unknown as HTMLInputElement).checked =
     settings.alwaysOnTop;
 
+  // Soft idle shell — real events replace this immediately
   player.load(buildDemoEvents());
   player.onEvent(renderEvent);
-  const first = player.current();
-  if (first) renderEvent(first);
-  else refreshSkin();
+  refreshSkin();
+  updateConnPanel();
 
   wireUi();
   applyQualityPreset("fine");
   applyI18n();
 
-  await resizeTo("pet");
-  await setAlwaysOnTop(settings.alwaysOnTop);
-  await restorePosition();
-
-  updateConnPanel();
-
-  // Always poll — primary reliability path for pet UI updates
+  // —— CRITICAL: wire events BEFORE any awaited window ops ——
+  // (await hang would leave poll never starting)
   setInterval(() => void pollAgentEvents(), 250);
   void pollAgentEvents();
+  uiLog("boot: poll started");
 
   if (isTauri()) {
     setInterval(() => void persistPosition(), 2000);
 
-    try {
-      await listen("agent-event", (ev) => {
-        console.log("[petdeck] listen agent-event");
-        ingestLiveEvent(ev.payload);
-      });
-      await listen("bridge-status", (ev) => {
-        const p = ev.payload as { ok?: boolean; error?: string };
-        setBridgeStatus(Boolean(p?.ok), p?.error);
-        applyI18n();
-      });
-      await listen<ClaudePresence>("claude-presence", (ev) => {
-        onClaudePresence(ev.payload);
-      });
-      // Initial snapshot
-      try {
-        const snap = await invoke<ClaudePresence>("claude_presence_snapshot");
-        onClaudePresence(snap);
-      } catch {
+    // Fire-and-forget listeners (do not block boot)
+    void listen("agent-event", (ev) => {
+      ingestLiveEvent(ev.payload);
+    }).then(() => uiLog("listen agent-event ok"));
+
+    void listen("bridge-status", (ev) => {
+      const p = ev.payload as { ok?: boolean; error?: string };
+      setBridgeStatus(Boolean(p?.ok), p?.error);
+      applyI18n();
+    });
+
+    void listen<ClaudePresence>("claude-presence", (ev) => {
+      onClaudePresence(ev.payload);
+    });
+
+    void invoke<ClaudePresence>("claude_presence_snapshot")
+      .then((snap) => onClaudePresence(snap))
+      .catch(() => {
         /* ignore */
-      }
-      // Presence poll backup (if emit drops)
-      setInterval(async () => {
-        try {
-          const snap = await invoke<ClaudePresence>("claude_presence_snapshot");
+      });
+
+    setInterval(() => {
+      void invoke<ClaudePresence>("claude_presence_snapshot")
+        .then((snap) =>
           onClaudePresence({
             ...snap,
             justConnected: false,
             justDisconnected: false,
-          });
-        } catch {
+          }),
+        )
+        .catch(() => {
           /* ignore */
-        }
-      }, 2000);
-      setTimeout(async () => {
-        try {
-          const r = await fetch("http://127.0.0.1:7788/health");
+        });
+    }, 2000);
+
+    setTimeout(() => {
+      void fetch("http://127.0.0.1:7788/health")
+        .then((r) => {
           setBridgeStatus(r.ok);
-        } catch {
+          applyI18n();
+        })
+        .catch(() => {
           setBridgeStatus(false, "health fetch failed");
-        }
-        applyI18n();
-      }, 600);
-    } catch (e) {
-      console.warn("[petdeck] tauri listen setup failed", e);
-    }
+          applyI18n();
+        });
+    }, 400);
+
+    // Window chrome last — never block event wiring
+    void resizeTo("pet");
+    void setAlwaysOnTop(settings.alwaysOnTop);
+    void restorePosition();
   }
 }
 

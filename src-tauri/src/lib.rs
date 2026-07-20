@@ -20,12 +20,19 @@ fn app_info() -> AppInfo {
     }
 }
 
+/// Frontend → Rust log so UI activity shows in the same terminal as the bridge.
+#[tauri::command]
+fn ui_log(message: String) {
+    eprintln!("[pettty-ui] {message}");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             app_info,
+            ui_log,
             bridge::bridge_info,
             bridge::pull_agent_events,
             claude_watch::claude_presence_snapshot

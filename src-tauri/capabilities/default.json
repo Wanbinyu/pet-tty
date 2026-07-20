@@ -5,6 +5,8 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:event:default",
+    "core:webview:default",
     "core:window:default",
     "core:window:allow-start-dragging",
     "core:window:allow-set-always-on-top",
@@ -17,6 +19,11 @@
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "core:window:allow-set-ignore-cursor-events",
-    "opener:default"
+    "opener:default",
+    "allow-app-info",
+    "allow-ui-log",
+    "allow-bridge-info",
+    "allow-pull-agent-events",
+    "allow-claude-presence-snapshot"
   ]
 }
