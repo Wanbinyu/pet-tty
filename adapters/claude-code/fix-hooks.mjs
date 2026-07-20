@@ -1,29 +1,79 @@
 /**
- * Install PetDeck as Claude Code **HTTP hooks** (fast — no node spawn per tool).
- * Claude POSTs native hook JSON → PetDeck maps & shows multi-session status.
+ * Install / repair PetDeck hooks in ~/.claude/settings.json
  *
- * Usage: node fix-hooks.mjs
+ * Installs BOTH:
+ *   - type: "http"   (fast, official Claude Code)
+ *   - type: "command" (fallback — works when HTTP hooks unsupported)
+ *
+ * Usage:
+ *   node fix-hooks.mjs
+ *   node fix-hooks.mjs --quiet
+ *   pettty hooks
  */
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
+const quiet = process.argv.includes("--quiet");
+const log = (...a) => {
+  if (!quiet) console.log(...a);
+};
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const hookScript = path
+  .join(__dirname, "petdeck-hook.mjs")
+  .replace(/\\/g, "/");
 const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
 const BASE = "http://127.0.0.1:7788/hooks/claude";
+const EVENT = "http://127.0.0.1:7788/event";
+
+const PHASES = [
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "Stop",
+  "Notification",
+  "SessionStart",
+  "SessionEnd",
+];
 
 function httpHook(phase) {
   return {
-    // omit matcher / use * = all tools (docs: "*", "", or omitted)
-    matcher: "*",
-    hooks: [
-      {
-        type: "http",
-        url: `${BASE}?phase=${encodeURIComponent(phase)}`,
-        timeout: 3,
-        // no async needed — HTTP is already non-blocking on errors
-      },
-    ],
+    type: "http",
+    url: `${BASE}?phase=${encodeURIComponent(phase)}`,
+    timeout: 5,
   };
+}
+
+function commandHook(phase) {
+  // Windows-safe: node + absolute path in double quotes
+  return {
+    type: "command",
+    command: `node "${hookScript}"`,
+    timeout: 8,
+    env: {
+      PETDECK_HOOK: phase,
+      PETDECK_URL: EVENT,
+    },
+  };
+}
+
+/** One matcher entry with http + command (Claude runs listed hooks). */
+function phaseEntry(phase) {
+  return {
+    matcher: "*",
+    hooks: [httpHook(phase), commandHook(phase)],
+  };
+}
+
+function hasPetdeckHooks(hooks) {
+  if (!hooks || typeof hooks !== "object") return false;
+  const pre = hooks.PreToolUse;
+  if (!Array.isArray(pre) || pre.length === 0) return false;
+  const blob = JSON.stringify(pre);
+  return blob.includes("7788") || blob.includes("petdeck-hook");
 }
 
 const settingsDir = path.dirname(settingsPath);
@@ -39,35 +89,53 @@ if (fs.existsSync(settingsPath)) {
   }
 }
 
+const already = hasPetdeckHooks(settings.hooks);
+if (already && quiet) {
+  // Still rewrite to dual http+command (self-heal partial installs)
+}
+
 const bak = `${settingsPath}.petdeck-http-${Date.now()}`;
 if (fs.existsSync(settingsPath)) {
   fs.copyFileSync(settingsPath, bak);
-  console.log("Backup:", bak);
+  log("Backup:", bak);
 }
 
-settings.hooks = {
-  // When you press Enter (including "你好" with no tools)
-  UserPromptSubmit: [httpHook("UserPromptSubmit")],
-  // When Claude uses tools
-  PreToolUse: [httpHook("PreToolUse")],
-  PostToolUse: [httpHook("PostToolUse")],
-  PostToolUseFailure: [httpHook("PostToolUseFailure")],
-  // When a turn ends
-  Stop: [httpHook("Stop")],
-  Notification: [httpHook("Notification")],
-  SessionStart: [httpHook("SessionStart")],
-  SessionEnd: [httpHook("SessionEnd")],
-};
+const hooks = {};
+for (const phase of PHASES) {
+  hooks[phase] = [phaseEntry(phase)];
+}
+settings.hooks = hooks;
 
 fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
 
-console.log("OK: Claude → PetDeck HTTP hooks installed");
-console.log("  settings:", settingsPath);
-console.log("  endpoint:", BASE);
-console.log("  events: PreToolUse, PostToolUse, PostToolUseFailure, Notification, Stop, UserPromptSubmit, SessionStart");
-console.log("");
-console.log("IMPORTANT:");
-console.log("  1) PetDeck must be running (listens on :7788)");
-console.log("  2) FULLY quit all Claude Code windows, then reopen");
-console.log("  3) Send a message / let Claude use a tool — pet updates without spawning node");
-console.log("  4) Multi-session: each Claude session_id gets its own status card");
+if (quiet) {
+  console.log(
+    already
+      ? "[pettty] Claude hooks OK (http + command → :7788)"
+      : "[pettty] Claude hooks installed (http + command → :7788)",
+  );
+} else {
+  console.log("OK: Claude → PetDeck hooks installed");
+  console.log("  settings:", settingsPath);
+  console.log("  HTTP:   ", BASE);
+  console.log("  command:", hookScript);
+  console.log("  phases: ", PHASES.join(", "));
+  console.log("");
+  console.log("IMPORTANT:");
+  console.log("  1) Start pet first:  pettty");
+  console.log("  2) FULLY quit all Claude Code windows, then reopen");
+  console.log("  3) Send a message / use a tool — pet should update");
+  console.log("  4) If you change API keys and hooks disappear, run:  pettty hooks");
+}
+
+// Verify without printing secrets
+try {
+  const v = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  if (!hasPetdeckHooks(v.hooks)) {
+    console.error("ERROR: hooks missing after write");
+    process.exit(1);
+  }
+} catch (e) {
+  console.error("Verify failed:", e.message);
+  process.exit(1);
+}

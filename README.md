@@ -21,15 +21,19 @@ Like `claude`, after a one-time install you only type:
 pettty
 ```
 
+This runs **`npm run tauri dev`** (Vite + Rust). Do **not** launch bare `debug/petdeck.exe` — that shows “无法访问此页面” because port 1420 is empty.
+
 | Command | What it does |
 |--------|----------------|
-| `pettty` | Start the pet |
-| `pettty dev` | Force `tauri dev` (hot reload) |
-| `pettty build` | Build release binary (faster next start) |
+| `pettty` | Start pet (= `tauri dev`), auto-repair Claude hooks |
+| `pettty release` | Start release `.exe` (after `pettty build`) |
+| `pettty build` | Build release binary |
 | `pettty test` | Send a test status event (pet must be running) |
-| `pettty hooks` | Install Claude Code HTTP hooks → `:7788` |
+| `pettty hooks` | Install/repair Claude hooks (HTTP + command) |
 | `pettty health` | Check local bridge |
 | `pettty help` | Help |
+
+**Claude not connecting?** Settings often lose hooks when you change API keys. Run `pettty hooks`, fully quit Claude, reopen.
 
 #### Install the `pettty` command (once)
 
@@ -108,15 +112,19 @@ Node.js 18+, Rust (rustup), WebView2. Windows: MSVC Build Tools (`link.exe`).
 pettty
 ```
 
+等价于 **`npm run tauri dev`**。不要单独运行 `debug/petdeck.exe`，否则会出现「无法访问此页面」（前端 1420 没起来）。
+
 | 命令 | 作用 |
 |------|------|
-| `pettty` | 启动桌宠 |
-| `pettty dev` | 强制开发模式（热更新） |
-| `pettty build` | 编译发布版，之后启动更快 |
-| `pettty test` | 发送测试状态（宠物需已打开） |
-| `pettty hooks` | 安装 Claude Code HTTP hooks |
+| `pettty` | 启动桌宠（= tauri dev），并自动修复 hooks |
+| `pettty release` | 启动发布版 exe（需先 `pettty build`） |
+| `pettty build` | 编译发布版 |
+| `pettty test` | 发送测试状态 |
+| `pettty hooks` | 安装/修复 Claude hooks（HTTP + command） |
 | `pettty health` | 检查本机桥接 |
 | `pettty help` | 帮助 |
+
+**Claude 连不上？** 改 API Key 时 `settings.json` 里的 hooks 常被覆盖。执行 `pettty hooks`，**完全退出** Claude 再开。
 
 #### 安装 `pettty` 命令（只需一次）
 
@@ -177,6 +185,7 @@ Node.js 18+、Rust、WebView2；Windows 需 C++ 生成工具。
 
 | Version | Notes |
 |--------|--------|
+| **0.3.2** | Fix `pettty` blank page · dual HTTP+command hooks · process detect · auto-repair hooks |
 | **0.3.1** | `pettty` CLI · UI delivery fix (eval + poll) · bilingual README |
 
 Repo: [github.com/Wanbinyu/pet-tty](https://github.com/Wanbinyu/pet-tty)

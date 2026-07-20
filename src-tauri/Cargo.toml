@@ -1,6 +1,6 @@
 [package]
 name = "petdeck"
-version = "0.3.1"
+version = "0.3.2"
 description = "Desktop pet for Claude Code — progress, tasks, mood"
 authors = ["PetDeck"]
 edition = "2021"

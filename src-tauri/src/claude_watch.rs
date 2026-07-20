@@ -1,11 +1,14 @@
-//! Poll ~/.claude/sessions/*.json for live Claude Code processes.
-//! Emits `claude-presence` to the UI so connection state is clear even
-//! when tool hooks are quiet.
+//! Detect live Claude Code even when hooks are quiet.
+//!
+//! Sources:
+//! 1) `~/.claude/sessions/*.json` (pid + session id)
+//! 2) Running process names: claude.exe / Claude / claude-code
 
 use serde::Serialize;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -24,12 +27,9 @@ pub struct ClaudeSessionInfo {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudePresence {
-    /// Any live Claude process from sessions dir
     pub connected: bool,
     pub sessions: Vec<ClaudeSessionInfo>,
-    /// true when we transitioned connected→disconnected this tick
     pub just_disconnected: bool,
-    /// true when we transitioned disconnected→connected this tick
     pub just_connected: bool,
     pub live_count: usize,
 }
@@ -40,7 +40,6 @@ fn sessions_dir() -> Option<PathBuf> {
 }
 
 fn dirs_next_home() -> Option<PathBuf> {
-    // Avoid new dep: use env
     if let Ok(h) = std::env::var("USERPROFILE") {
         return Some(PathBuf::from(h));
     }
@@ -57,7 +56,6 @@ fn pid_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        use std::process::Command;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let out = Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
@@ -74,6 +72,58 @@ fn pid_alive(pid: u32) -> bool {
     #[cfg(not(windows))]
     {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+}
+
+/// Any claude.exe / Claude process running (not tied to sessions/*.json).
+fn process_scan_count() -> usize {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let names = ["claude.exe", "Claude.exe"];
+        let mut total = 0usize;
+        for name in names {
+            let out = Command::new("tasklist")
+                .args(["/FI", &format!("IMAGENAME eq {name}"), "/NH"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+            if let Ok(o) = out {
+                let s = String::from_utf8_lossy(&o.stdout).to_lowercase();
+                // tasklist prints "INFO: No tasks..." when empty
+                if s.contains("claude") && !s.contains("no tasks") && !s.contains("没有") {
+                    // rough count of lines with the image name
+                    total += s
+                        .lines()
+                        .filter(|l| l.to_lowercase().contains("claude"))
+                        .count()
+                        .max(1);
+                }
+            }
+        }
+        // Also: wmic/command line often shows node wrapping — check for claude-code path
+        let out = Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq node.exe", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        // node alone is too broad — skip
+        let _ = out;
+        total
+    }
+    #[cfg(not(windows))]
+    {
+        let out = Command::new("sh")
+            .args(["-c", "pgrep -af 'claude' 2>/dev/null | head -20"])
+            .output();
+        match out {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.lines()
+                    .filter(|l| l.contains("claude") && !l.contains("pgrep"))
+                    .count()
+            }
+            Err(_) => 0,
+        }
     }
 }
 
@@ -127,7 +177,11 @@ fn scan_sessions() -> Vec<ClaudeSessionInfo> {
             .to_string();
         let alive = pid_alive(pid);
         out.push(ClaudeSessionInfo {
-            session_id,
+            session_id: if session_id.is_empty() {
+                format!("pid-{pid}")
+            } else {
+                session_id
+            },
             pid,
             alive,
             status,
@@ -138,24 +192,52 @@ fn scan_sessions() -> Vec<ClaudeSessionInfo> {
     out
 }
 
+fn build_presence() -> ClaudePresence {
+    let sessions = scan_sessions();
+    let mut live: Vec<_> = sessions.into_iter().filter(|s| s.alive).collect();
+    let proc_n = process_scan_count();
+
+    // If process exists but sessions dir empty, still report connected
+    if live.is_empty() && proc_n > 0 {
+        live.push(ClaudeSessionInfo {
+            session_id: "claude-process".into(),
+            pid: 0,
+            alive: true,
+            status: "running".into(),
+            cwd: String::new(),
+            name: "claude".into(),
+        });
+    }
+
+    ClaudePresence {
+        connected: !live.is_empty() || proc_n > 0,
+        live_count: live.len().max(proc_n),
+        sessions: live,
+        just_connected: false,
+        just_disconnected: false,
+    }
+}
+
 pub fn start(app: AppHandle) {
     thread::spawn(move || {
         let mut was_connected = false;
         loop {
-            let sessions = scan_sessions();
-            let live: Vec<_> = sessions.into_iter().filter(|s| s.alive).collect();
-            let connected = !live.is_empty();
-            let just_connected = connected && !was_connected;
-            let just_disconnected = !connected && was_connected;
+            let mut payload = build_presence();
+            let connected = payload.connected;
+            payload.just_connected = connected && !was_connected;
+            payload.just_disconnected = !connected && was_connected;
             was_connected = connected;
 
-            let payload = ClaudePresence {
-                connected,
-                live_count: live.len(),
-                sessions: live,
-                just_connected,
-                just_disconnected,
-            };
+            if payload.just_connected {
+                eprintln!(
+                    "[pettty] Claude detected (live_count={})",
+                    payload.live_count
+                );
+            }
+            if payload.just_disconnected {
+                eprintln!("[pettty] Claude process gone");
+            }
+
             let _ = app.emit("claude-presence", &payload);
             thread::sleep(Duration::from_millis(1500));
         }
@@ -164,13 +246,5 @@ pub fn start(app: AppHandle) {
 
 #[tauri::command]
 pub fn claude_presence_snapshot() -> ClaudePresence {
-    let sessions = scan_sessions();
-    let live: Vec<_> = sessions.into_iter().filter(|s| s.alive).collect();
-    ClaudePresence {
-        connected: !live.is_empty(),
-        live_count: live.len(),
-        sessions: live,
-        just_connected: false,
-        just_disconnected: false,
-    }
+    build_presence()
 }
