@@ -48,6 +48,7 @@
           </div>
           <img class="pet-img hidden" id="pet-img" alt="" draggable="false" />
           <div class="pet-vector hidden" id="pet-vector" aria-hidden="true"></div>
+          <img class="pet-sprite hidden" id="pet-sprite" alt="" draggable="false" />
           <div class="pet-spark" id="pet-spark" aria-hidden="true"></div>
         </div>
         <div id="attention-dot" class="attention-dot hidden"></div>
@@ -70,6 +71,8 @@
       <div id="ctx-skin-list" class="ctx-skin-list"></div>
       <button type="button" class="ctx-item" data-action="import" id="ctx-import"></button>
       <button type="button" class="ctx-item" data-action="import-pixel" id="ctx-import-pixel"></button>
+      <button type="button" class="ctx-item" data-action="import-sprite" id="ctx-import-sprite"></button>
+      <button type="button" class="ctx-item" data-action="import-sprite-img" id="ctx-import-sprite-img"></button>
       <p class="ctx-hint" id="ctx-delete-hint"></p>
       <label class="ctx-check">
         <input type="checkbox" id="ctx-ontop" />
@@ -85,6 +88,8 @@
 
     <input type="file" id="file-import" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden-file" />
     <input type="file" id="file-pixel" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden-file" />
+    <input type="file" id="file-sprite" webkitdirectory multiple class="hidden-file" />
+    <input type="file" id="file-sprite-img" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden-file" />
 
     <div id="inspector" class="inspector hidden">
       <header class="insp-head" data-tauri-drag-region>
@@ -124,6 +129,8 @@
           <div class="btn-row">
             <button type="button" class="btn" id="btn-import"></button>
             <button type="button" class="btn" id="btn-import-pixel"></button>
+            <button type="button" class="btn" id="btn-import-sprite"></button>
+            <button type="button" class="btn" id="btn-import-sprite-img"></button>
             <button type="button" class="btn ctx-danger-btn" id="btn-delete-skin"></button>
           </div>
           <div class="pixel-tools">

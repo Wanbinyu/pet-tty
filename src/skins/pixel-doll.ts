@@ -46,7 +46,7 @@ export async function makePixelDollFromImage(
   const source = readSource(img);
   const box = contentBox(source.data.data, source.canvas.width, source.canvas.height);
 
-  const gridW = clamp(Math.round(options.width ?? 64), 24, 64);
+  const gridW = clamp(Math.round(options.width ?? 64), 24, 128);
   const gridH = Math.round(gridW * 1.48);
   const small = document.createElement("canvas");
   small.width = gridW;
@@ -87,7 +87,7 @@ export async function makePixelDollFromImage(
   progress("draw", 0.76);
   const pixels = ctx.getImageData(0, 0, gridW, gridH);
   normalizeAlpha(pixels);
-  const paletteSize = gridW >= 56 ? 30 : gridW >= 36 ? 20 : 12;
+  const paletteSize = gridW >= 112 ? 56 : gridW >= 88 ? 40 : gridW >= 56 ? 30 : gridW >= 36 ? 20 : 12;
   quantizeInPlace(pixels, paletteSize);
   addPixelOutline(pixels, gridW, gridH);
   addSelectiveDetail(pixels, gridW, gridH);
@@ -123,7 +123,64 @@ function readSource(img: HTMLImageElement): {
   canvas.height = h;
   const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(img, 0, 0, w, h);
-  return { canvas, data: ctx.getImageData(0, 0, w, h) };
+  const data = ctx.getImageData(0, 0, w, h);
+  unsharpMask(data, 2, 0.8); // sharpen blurry sources before pixelization
+  ctx.putImageData(data, 0, 0);
+  return { canvas, data };
+}
+
+/** Unsharp mask: sharpened = original + amount * (original - blurred).
+ *  Helps blurry source photos keep edges and facial detail after pixelization. */
+function unsharpMask(image: ImageData, radius: number, amount: number) {
+  if (radius < 1) return;
+  const blurred = boxBlur(image.data, image.width, image.height, radius);
+  const data = image.data;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue; // skip transparent
+    for (let c = 0; c < 3; c++) {
+      const v = data[i + c] + amount * (data[i + c] - blurred[i + c]);
+      data[i + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+}
+
+/** Separable box blur (radius = window half-size). Returns a new RGBA buffer. */
+function boxBlur(
+  src: Uint8ClampedArray,
+  w: number,
+  h: number,
+  radius: number,
+): Uint8ClampedArray {
+  const horiz = new Uint8ClampedArray(src.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let r = 0, g = 0, b = 0, a = 0, cnt = 0;
+      for (let dx = -radius; dx <= radius; dx++) {
+        const xx = x + dx;
+        if (xx < 0 || xx >= w) continue;
+        const i = (row + xx) * 4;
+        r += src[i]; g += src[i + 1]; b += src[i + 2]; a += src[i + 3]; cnt++;
+      }
+      const oi = (row + x) * 4;
+      horiz[oi] = r / cnt; horiz[oi + 1] = g / cnt; horiz[oi + 2] = b / cnt; horiz[oi + 3] = a / cnt;
+    }
+  }
+  const out = new Uint8ClampedArray(src.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let r = 0, g = 0, b = 0, a = 0, cnt = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        const i = (yy * w + x) * 4;
+        r += horiz[i]; g += horiz[i + 1]; b += horiz[i + 2]; a += horiz[i + 3]; cnt++;
+      }
+      const oi = (y * w + x) * 4;
+      out[oi] = r / cnt; out[oi + 1] = g / cnt; out[oi + 2] = b / cnt; out[oi + 3] = a / cnt;
+    }
+  }
+  return out;
 }
 
 function contentBox(

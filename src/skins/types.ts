@@ -4,15 +4,29 @@ export type SkinKind = "css" | "image" | "vector" | "sprite";
 
 export type CssThemeId = "ember" | "mint" | "pixel-blob" | "ghost";
 
-/** Per-state frame sequence for sprite characters (Phase 2 imports). */
+/** Per-state frame sequence for sprite characters (PNG sequence animation,
+ *  e.g. imported DyberPet mods). */
 export interface SpriteFrame {
+  /** data URL (builtin skins) or runtime object URL (imported skins) */
   src: string;
-  /** ms to show this frame (optional; falls back to manifest fps) */
+  /** ms to show this frame (optional; falls back to the state's fps) */
   duration?: number;
 }
+export interface SpriteState {
+  /** Embedded frames (builtin skins). Present => frames are self-contained. */
+  frames?: SpriteFrame[];
+  /** Frame count for imported skins whose blobs live in IndexedDB
+   *  (keyed by skinId + state). Absent `frames` => player loads from IDB. */
+  frameCount?: number;
+  /** frames per second; default 12 */
+  fps?: number;
+  /** loop the sequence; default true */
+  loop?: boolean;
+}
 export interface SpriteManifest {
-  /** frames per agent state; missing states fall back to "idle" */
-  states: Partial<Record<string, { frames: SpriteFrame[]; fps?: number; loop?: boolean }>>;
+  /** per agent state (AgentState values as keys); states without an entry
+   *  fall back to "idle" at playback time. */
+  states: Partial<Record<string, SpriteState>>;
 }
 
 export interface SkinMeta {

@@ -1,5 +1,6 @@
 import { BUILTIN_SKINS, DEFAULT_SKIN_ID } from "./presets";
 import type { SkinMeta } from "./types";
+import * as spriteStore from "./spriteStore";
 
 const CUSTOM_KEY = "petdeck.skins.custom.v1";
 const ACTIVE_KEY = "petdeck.skins.active";
@@ -64,8 +65,11 @@ export function addCustomSkin(skin: SkinMeta): SkinMeta {
 }
 
 export function removeCustomSkin(id: string) {
+  const skin = getSkin(id);
   const customs = listCustomSkins().filter((s) => s.id !== id);
   saveCustomSkins(customs);
+  // Imported sprite frames live in IndexedDB; drop them so the skin is gone.
+  if (skin?.kind === "sprite") void spriteStore.deleteSkin(id);
   if (getActiveSkinId() === id) {
     setActiveSkinId(DEFAULT_SKIN_ID);
   }

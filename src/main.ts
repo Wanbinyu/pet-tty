@@ -24,6 +24,9 @@ import { applySkinToDom } from "./skins/render";
 import { getVectorCharacter } from "./skins/vector";
 import { fileToDataUrl, normalizeImport, type PixelQuality } from "./skins/pixelize";
 import { makePixelDollFromImage } from "./skins/pixel-doll";
+import * as spriteImport from "./skins/spriteImport";
+import { synthesizeSpriteFromImage } from "./skins/spriteSynth";
+import { isolateSubject } from "./skins/segment";
 import { hideWorkProgress, setWorkProgress } from "./skins/progress";
 import type { SkinMeta } from "./skins/types";
 import {
@@ -430,6 +433,15 @@ function renderSkinLists() {
       } else {
         preview.textContent = "◉";
       }
+    } else if (skin.kind === "sprite") {
+      const img = document.createElement("img");
+      img.alt = "";
+      if (skin.pixelated) img.style.imageRendering = "pixelated";
+      preview.appendChild(img);
+      void spriteImport.firstFrameSrc(skin).then((src) => {
+        if (src) img.src = src;
+        else img.replaceWith(Object.assign(document.createElement("span"), { textContent: "▷" }));
+      });
     } else {
       preview.classList.add(`swatch-${skin.theme ?? "ember"}`);
       preview.textContent =
@@ -478,6 +490,8 @@ function applyI18n() {
   $("ctx-skins-label").textContent = d.ui.skins;
   $("ctx-import").textContent = d.ui.importImage;
   $("ctx-import-pixel").textContent = d.ui.importPixel;
+  $("ctx-import-sprite").textContent = d.ui.importSprite;
+  $("ctx-import-sprite-img").textContent = d.ui.importSpriteImg;
   $("ctx-ontop-label").textContent = d.ui.alwaysOnTop;
   $("ctx-demo").textContent = demoPlaying ? d.ui.demoPause : d.ui.demoPlay;
   $("ctx-step").textContent = d.ui.demoStep;
@@ -497,6 +511,8 @@ function applyI18n() {
   $("btn-play").textContent = demoPlaying ? d.ui.demoPause : d.ui.demoPlay;
   $("btn-import").textContent = d.ui.importImage;
   $("btn-import-pixel").textContent = d.ui.importPixel;
+  $("btn-import-sprite").textContent = d.ui.importSprite;
+  $("btn-import-sprite-img").textContent = d.ui.importSpriteImg;
   $("btn-delete-skin").textContent = d.ui.deleteSkin;
   // pixel-size / pixel-colors inputs were removed from index.html (the doll
   // importer uses the fine/standard/chunky quality presets + opt-subject
@@ -1176,7 +1192,7 @@ async function importImage(asPixel: boolean) {
           .checked;
         // Doll width by quality preset
         const width =
-          pixelQuality === "fine" ? 64 : pixelQuality === "standard" ? 44 : 28;
+          pixelQuality === "fine" ? 128 : pixelQuality === "standard" ? 44 : 28;
         dataUrl = await makePixelDollFromImage(dataUrl, {
           isolate: subjectOnly,
           width,
@@ -1204,6 +1220,196 @@ async function importImage(asPixel: boolean) {
       setActiveSkinId(skin.id);
       refreshSkin();
       showToast(asPixel ? d.ui.pixelOk : d.ui.importOk);
+    } catch (err) {
+      console.error(err);
+      showToast(d.ui.importFail);
+    } finally {
+      hideWorkProgress();
+    }
+  };
+  input.click();
+}
+
+/** Import a DyberPet character folder as a sprite skin: pick folder, discover
+ *  actions, show a mapping dialog, then build + store (IndexedDB) + activate. */
+async function importSprite() {
+  const input = $("file-sprite") as unknown as HTMLInputElement;
+  input.value = "";
+  input.onchange = async () => {
+    const files = Array.from(input.files ?? []);
+    if (!files.length) return;
+    const d = t();
+    try {
+      const actionMap = spriteImport.discoverActions(files);
+      const actionNames = Array.from(actionMap.keys()).sort();
+      if (!actionNames.length) {
+        showToast(d.ui.spriteImportFail);
+        return;
+      }
+      const auto = spriteImport.defaultMapping(actionNames);
+      const defaultName =
+        (await spriteImport.readCharName(files)) || folderName(files);
+      openSpriteMappingDialog(actionNames, auto, defaultName, (mapping, name) => {
+        void buildAndSaveSprite(files, mapping, name);
+      });
+    } catch (err) {
+      console.error(err);
+      showToast(d.ui.importFail);
+    }
+  };
+  input.click();
+}
+
+function folderName(files: File[]): string {
+  const p = files[0]?.webkitRelativePath || files[0]?.name || "";
+  return p.split(/[\\/]/)[0] || "Sprite";
+}
+
+async function buildAndSaveSprite(
+  files: File[],
+  mapping: Partial<Record<AgentState, string>>,
+  name: string,
+) {
+  const d = t();
+  try {
+    setWorkProgress(0.02, d.ui.spriteWorking);
+    const skin = await spriteImport.buildSpriteSkin(files, mapping, name, (p) =>
+      setWorkProgress(p.ratio, `${d.ui.spriteWorking} · ${p.label}`),
+    );
+    addCustomSkin(skin);
+    setActiveSkinId(skin.id);
+    refreshSkin();
+    showToast(d.ui.spriteImportOk);
+  } catch (err) {
+    console.error(err);
+    showToast(d.ui.importFail);
+  } finally {
+    hideWorkProgress();
+  }
+}
+
+const SPRITE_STATES: AgentState[] = [
+  "idle",
+  "thinking",
+  "tool_call",
+  "editing",
+  "waiting_user",
+  "running_tests",
+  "success",
+  "error",
+];
+
+/** Modal listing each PetDeck state with a <select> of discovered DyberPet
+ *  actions (defaulted to the auto-mapping). On confirm, builds the skin. */
+function openSpriteMappingDialog(
+  actionNames: string[],
+  auto: Partial<Record<AgentState, string>>,
+  defaultName: string,
+  onConfirm: (mapping: Partial<Record<AgentState, string>>, name: string) => void,
+) {
+  const d = t();
+  const overlay = document.createElement("div");
+  overlay.className = "sprite-map-overlay";
+  const panel = document.createElement("div");
+  panel.className = "sprite-map-panel";
+
+  const title = document.createElement("div");
+  title.className = "sprite-map-title";
+  title.textContent = d.ui.spriteMappingTitle;
+  panel.appendChild(title);
+
+  const nameLabel = document.createElement("label");
+  nameLabel.className = "sprite-map-name";
+  const nameCaption = document.createElement("span");
+  nameCaption.textContent = d.ui.skins;
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.value = defaultName;
+  nameLabel.append(nameCaption, nameInput);
+  panel.appendChild(nameLabel);
+
+  const selects: Partial<Record<AgentState, HTMLSelectElement>> = {};
+  for (const st of SPRITE_STATES) {
+    const row = document.createElement("div");
+    row.className = "sprite-map-row";
+    const lbl = document.createElement("span");
+    lbl.textContent = d.state[st];
+    const sel = document.createElement("select");
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "—";
+    sel.appendChild(none);
+    for (const a of actionNames) {
+      const o = document.createElement("option");
+      o.value = a;
+      o.textContent = a;
+      sel.appendChild(o);
+    }
+    if (auto[st]) sel.value = auto[st]!;
+    selects[st] = sel;
+    row.append(lbl, sel);
+    panel.appendChild(row);
+  }
+
+  const btns = document.createElement("div");
+  btns.className = "sprite-map-btns";
+  const cancel = document.createElement("button");
+  cancel.className = "btn";
+  cancel.textContent = d.ui.cancel;
+  const ok = document.createElement("button");
+  ok.className = "btn";
+  ok.textContent = d.ui.moodSave;
+  btns.append(cancel, ok);
+  panel.appendChild(btns);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  cancel.onclick = close;
+  overlay.onclick = (e) => {
+    if (e.target === overlay) close();
+  };
+  ok.onclick = () => {
+    const mapping: Partial<Record<AgentState, string>> = {};
+    for (const st of SPRITE_STATES) {
+      const v = selects[st]!.value;
+      if (v) mapping[st] = v;
+    }
+    const name = nameInput.value.trim() || defaultName;
+    close();
+    onConfirm(mapping, name);
+  };
+}
+
+/** Import a single image and synthesize per-state action frames into a sprite
+ *  skin (breathing / tilt / hop / shake …). Lets any image character animate
+ *  like a DyberPet mod. Best with a transparent-background character PNG. */
+async function importSpriteFromImage() {
+  const input = $("file-sprite-img") as unknown as HTMLInputElement;
+  input.value = "";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const d = t();
+    try {
+      let dataUrl = await fileToDataUrl(file);
+      const name = file.name.replace(/\.[^.]+$/, "").slice(0, 24) || "Sprite";
+      // 抠图: isolate the subject so only the character animates, not the bg
+      setWorkProgress(0.05, d.ui.stageIsolate);
+      try {
+        dataUrl = await isolateSubject(dataUrl);
+      } catch (e) {
+        console.warn("[petdeck] subject isolation failed, using original", e);
+      }
+      setWorkProgress(0.15, d.ui.spriteWorking);
+      const skin = await synthesizeSpriteFromImage(dataUrl, name, (p) =>
+        setWorkProgress(0.15 + p.ratio * 0.85, `${d.ui.spriteWorking} · ${p.label}`),
+      );
+      addCustomSkin(skin);
+      setActiveSkinId(skin.id);
+      refreshSkin();
+      showToast(d.ui.spriteImportOk);
     } catch (err) {
       console.error(err);
       showToast(d.ui.importFail);
@@ -1364,6 +1570,14 @@ function wireUi() {
         await hideCtx();
         await importImage(true);
         break;
+      case "import-sprite":
+        await hideCtx();
+        void importSprite();
+        break;
+      case "import-sprite-img":
+        await hideCtx();
+        void importSpriteFromImage();
+        break;
       case "demo-play":
         toggleDemo();
         await hideCtx();
@@ -1425,6 +1639,8 @@ function wireUi() {
 
   $("btn-import").addEventListener("click", () => void importImage(false));
   $("btn-import-pixel").addEventListener("click", () => void importImage(true));
+  $("btn-import-sprite").addEventListener("click", () => void importSprite());
+  $("btn-import-sprite-img").addEventListener("click", () => void importSpriteFromImage());
   $("btn-delete-skin").addEventListener("click", () => {
     const skin = getActiveSkin();
     if (skin.builtin) {

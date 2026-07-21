@@ -1,6 +1,7 @@
 import type { AgentState } from "../events/types";
 import { PET_VISUAL } from "../pet/mood";
 import { getVectorCharacter } from "./vector";
+import { spritePlayer } from "./spritePlayer";
 import type { SkinMeta } from "./types";
 
 /**
@@ -16,6 +17,7 @@ export function applySkinToDom(
   const img = petRoot.querySelector(".pet-img") as HTMLImageElement | null;
   const face = petRoot.querySelector(".pet-face") as HTMLElement | null;
   const vectorBox = petRoot.querySelector(".pet-vector") as HTMLElement | null;
+  const spriteImg = petRoot.querySelector(".pet-sprite") as HTMLImageElement | null;
 
   petRoot.className = `pet ${visual.bodyClass}`;
   petRoot.dataset.skinKind = skin.kind;
@@ -28,7 +30,21 @@ export function applySkinToDom(
     img?.classList.add("hidden");
     if (img) img.removeAttribute("src");
     vectorBox?.classList.add("hidden");
+    spriteImg?.classList.add("hidden");
   };
+
+  // Stop the sprite player unless this is a sprite skin.
+  if (skin.kind !== "sprite") spritePlayer.deactivate();
+
+  if (skin.kind === "sprite" && spriteImg) {
+    hideAllLayers();
+    spriteImg.classList.remove("hidden");
+    spriteImg.classList.toggle("pixelated", !!skin.pixelated);
+    spritePlayer.attach(spriteImg);
+    spritePlayer.activate(skin);
+    spritePlayer.setState(state);
+    return;
+  }
 
   if (skin.kind === "vector" && skin.vectorId && vectorBox) {
     const vc = getVectorCharacter(skin.vectorId);

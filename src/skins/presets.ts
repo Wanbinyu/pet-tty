@@ -12,14 +12,6 @@ export const BUILTIN_SKINS: SkinMeta[] = [
     theme: "ember",
   },
   {
-    id: "mint",
-    nameEn: "Mint Bun",
-    nameZh: "薄荷包",
-    kind: "css",
-    builtin: true,
-    theme: "mint",
-  },
-  {
     id: "pixel-blob",
     nameEn: "Pixel Blob",
     nameZh: "像素团",

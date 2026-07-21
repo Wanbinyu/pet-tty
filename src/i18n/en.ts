@@ -40,6 +40,8 @@ export type Dict = {
     closeInspector: string;
     importImage: string;
     importPixel: string;
+    importSprite: string;
+    importSpriteImg: string;
     deleteSkin: string;
     deleteSkinHint: string;
     deleteConfirm: string;
@@ -67,6 +69,10 @@ export type Dict = {
     qualityStandard: string;
     qualityChunky: string;
     pixelWorking: string;
+    spriteWorking: string;
+    spriteImportOk: string;
+    spriteImportFail: string;
+    spriteMappingTitle: string;
     completionMessages: string[];
     workingMessages: string[];
     idleMessages: string[];
@@ -137,6 +143,8 @@ export const en: Dict = {
     closeInspector: "Back to pet",
     importImage: "Import image as-is…",
     importPixel: "Create detailed pixel character…",
+    importSprite: "Import sprite mod (DyberPet folder)…",
+    importSpriteImg: "Generate action skin from image…",
     deleteSkin: "Delete current custom skin",
     deleteSkinHint: "Right-click a custom skin → Delete",
     deleteConfirm: "Delete this skin",
@@ -165,6 +173,10 @@ export const en: Dict = {
     qualityStandard: "Standard",
     qualityChunky: "Chunky",
     pixelWorking: "Making pixel doll…",
+    spriteWorking: "Building sprite skin…",
+    spriteImportOk: "Sprite skin imported",
+    spriteImportFail: "No action frames found in that folder",
+    spriteMappingTitle: "Map actions to states",
     completionMessages: [
       "Task done ✓ praise me, master?",
       "All done for you~ pat pat",

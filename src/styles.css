@@ -1210,6 +1210,73 @@ body.mode-inspector {
   filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.22));
 }
 
+/* ============ Sprite characters (PNG sequence animation) ============ */
+/* Mirrors .pet-img: fill the pet box with object-fit: contain so wide or
+   portrait frames never squish (the old height%/max-width combo distorted
+   them). Anchored bottom-center so the character "stands" on the ground.
+   Sized a touch larger than the 100x100 box to read bigger; overflow is fine
+   since the window is transparent. */
+.pet-sprite {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 180px;
+  height: 250px;
+  object-fit: contain;
+  object-position: center bottom;
+  z-index: 2;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  filter: drop-shadow(0 5px 5px rgba(0, 0, 0, 0.24));
+}
+.pet-sprite.pixelated {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* ============ Sprite import: action -> state mapping dialog ============ */
+.sprite-map-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.sprite-map-panel {
+  background: #1f2335;
+  color: #c0caf5;
+  border-radius: 12px;
+  padding: 16px;
+  width: 330px;
+  max-height: 92vh;
+  overflow: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+.sprite-map-title { font-weight: 600; margin-bottom: 10px; }
+.sprite-map-name { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.sprite-map-name input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: inherit;
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.sprite-map-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 3px 0; }
+.sprite-map-row select {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: inherit;
+  border-radius: 6px;
+  padding: 3px 5px;
+  min-width: 150px;
+}
+.sprite-map-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
 /* Imported characters retain their detailed silhouette and still respond to
    the same agent states as native pets. */
 #pet[data-skin-kind="image"] .pet-img {
