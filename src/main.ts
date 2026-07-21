@@ -27,6 +27,7 @@ import { makePixelDollFromImage } from "./skins/pixel-doll";
 import * as spriteImport from "./skins/spriteImport";
 import { synthesizeSpriteFromImage } from "./skins/spriteSynth";
 import { isolateSubject } from "./skins/segment";
+import { spritePlayer } from "./skins/spritePlayer";
 import { hideWorkProgress, setWorkProgress } from "./skins/progress";
 import type { SkinMeta } from "./skins/types";
 import {
@@ -45,6 +46,10 @@ const INSP_SIZE = { w: 360, h: 640 };
 
 const player = new EventPlayer();
 let latest: AgentEvent | null = null;
+
+/** True while the pet window is being dragged - pauses the costly 2s polls
+ *  (presence snapshot spawns a tasklist scan in Rust) so the drag stays smooth. */
+let dragging = false;
 let demoPlaying = false;
 let showBubble = true;
 let idleHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -303,6 +308,7 @@ async function restorePosition() {
 
 async function persistPosition() {
   if (!isTauri()) return;
+  if (dragging) return; // skip mid-drag; pointerup persists the final position
   try {
     const pos = await (await win()).outerPosition();
     saveSettings({ windowX: pos.x, windowY: pos.y });
@@ -1490,9 +1496,13 @@ function wireUi() {
     if (e.button !== 0) return;
     if (menuOpen) return;
     if (!$("inspector").classList.contains("hidden")) return;
+    spritePlayer.pause(); // freeze the frame loop during drag to keep it smooth
+    dragging = true;
     startWindowDrag();
   });
   petHit.addEventListener("pointerup", () => {
+    dragging = false;
+    spritePlayer.resume();
     void persistPosition();
   });
 
@@ -1732,6 +1742,21 @@ async function boot() {
   if (isTauri()) {
     setInterval(() => void persistPosition(), 2000);
 
+    // Pause the sprite frame loop while the window is dragged, and resume
+    // ~200ms after movement stops. Per-frame img.src + drop-shadow re-render
+    // contends with the drag compositor; freezing frames keeps dragging smooth.
+    let moveResume: number | null = null;
+    void getCurrentWindow().onMoved(() => {
+      dragging = true;
+      spritePlayer.pause();
+      if (moveResume !== null) clearTimeout(moveResume);
+      moveResume = window.setTimeout(() => {
+        dragging = false;
+        spritePlayer.resume();
+        moveResume = null;
+      }, 200);
+    });
+
     // Fire-and-forget listeners (do not block boot)
     void listen("agent-event", (ev) => {
       ingestLiveEvent(ev.payload);
@@ -1754,6 +1779,7 @@ async function boot() {
       });
 
     setInterval(() => {
+      if (dragging) return; // presence poll spawns a tasklist scan in Rust - skip mid-drag
       void invoke<ClaudePresence>("claude_presence_snapshot")
         .then((snap) =>
           onClaudePresence({

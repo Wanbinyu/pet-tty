@@ -23,6 +23,7 @@ class SpritePlayer {
   private idx = 0;
   private timer: number | null = null;
   private loading = false;
+  private paused = false;
   private objectUrls: string[] = [];
 
   attach(img: HTMLImageElement) {
@@ -79,6 +80,23 @@ class SpritePlayer {
     this.play();
   }
 
+  /** Temporarily stop the frame loop (e.g. during a window drag) so it doesn't
+   *  contend with the compositor. The current frame stays visible. */
+  pause() {
+    this.paused = true;
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  /** Resume the frame loop after pause(). */
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.play();
+  }
+
   private cfgFor(state: AgentState): SpriteState | undefined {
     if (!this.manifest) return undefined;
     return this.manifest.states[state] ?? this.manifest.states.idle;
@@ -90,6 +108,7 @@ class SpritePlayer {
   }
 
   private play() {
+    if (this.paused) return;
     if (!this.img || !this.skinId || this.loading) return;
     const frames = this.framesFor(this.state);
     if (this.timer !== null) {
@@ -136,6 +155,7 @@ class SpritePlayer {
     this.skinId = null;
     this.manifest = null;
     this.loading = false;
+    this.paused = false;
     this.idx = 0;
     if (this.img) this.img.removeAttribute("src");
   }
