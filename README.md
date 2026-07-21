@@ -78,7 +78,7 @@ pettty test
 - Multi-session stack
 - Sticky tool states (long read/edit won’t flash idle)
 - Triple delivery: Tauri emit + ring poll + **webview.eval** inject
-- Skins / pixel doll import
+- Skins / pixel doll / animated sprite import ([docs/SPRITES.md](docs/SPRITES.md))
 - UI: 中文 / English
 
 ### Stack
@@ -168,7 +168,7 @@ pettty test
 - 多会话
 - 工具状态粘性
 - 三通道刷新 UI：事件 emit + 轮询 + **webview 直注**
-- 皮肤 / 像素小人
+- 皮肤 / 像素小人 / 动画皮肤([docs/SPRITES.md](docs/SPRITES.md))
 - 中英双语界面
 
 ### 隐私
