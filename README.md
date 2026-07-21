@@ -1,11 +1,25 @@
 # PetDeck / pet-tty
 
 <p align="center">
-  <strong>Desktop pet for Claude Code</strong><br/>
-  给 Claude Code 用的桌面宠物 · 终端里输入 <code>pettty</code> 即可启动
+  <em>Desktop pet for Claude Code — see what your AI agent is doing, at a glance.</em><br/>
+  给 Claude Code 的桌面宠物 · 终端输入 <code>pettty</code> 启动
 </p>
 
-[English](#english) · [中文](#中文)
+<!-- Record a short demo (pet reacting to Claude thinking / editing / success)
+     and save as docs/demo.gif, then replace this comment with:
+     <p align="center"><img src="docs/demo.gif" alt="PetDeck demo" width="440"/></p> -->
+
+<p align="center">
+  <a href="https://github.com/Wanbinyu/pet-tty/releases"><img src="https://img.shields.io/github/v/release/Wanbinyu/pet-tty?label=version" alt="version"/></a>
+  <a href="https://github.com/Wanbinyu/pet-tty"><img src="https://img.shields.io/github/stars/Wanbinyu/pet-tty?style=social" alt="stars"/></a>
+  <img src="https://img.shields.io/badge/platform-Windows-0078D4" alt="platform"/>
+  <img src="https://img.shields.io/badge/stack-Tauri%202%20%7C%20Vite%20%7C%20Rust-DEA584" alt="stack"/>
+  <img src="https://img.shields.io/github/license/Wanbinyu/pet-tty?color=blue" alt="license"/>
+</p>
+
+<p align="center">
+  <a href="#english">English</a> · <a href="#中文">中文</a> · <a href="docs/SPRITES.md">Skins / 皮肤</a>
+</p>
 
 ---
 

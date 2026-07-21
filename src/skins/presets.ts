@@ -38,4 +38,4 @@ export const BUILTIN_SKINS: SkinMeta[] = [
   })),
 ];
 
-export const DEFAULT_SKIN_ID = "ember";
+export const DEFAULT_SKIN_ID = "vec-maid";

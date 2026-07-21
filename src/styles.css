@@ -1484,3 +1484,42 @@ body.mode-inspector {
 }
 @keyframes robot-arm-l { to { transform: rotate(8deg) translateY(2px); } }
 @keyframes robot-arm-r { to { transform: rotate(-8deg) translateY(-1px); } }
+
+/* ============ Maid character (original) ============ */
+#pet[data-vector="maid"] .vc-maid-arm {
+  transform-box: fill-box;
+  transform-origin: 50% 12%;
+}
+#pet[data-vector="maid"] .vc-maid-eye {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: maid-blink 5.5s ease-in-out infinite;
+}
+#pet.pet--wait[data-vector="maid"] .vc-maid-arm-r {
+  animation: maid-wave 0.55s ease-in-out infinite;
+}
+#pet.pet--success[data-vector="maid"] .vc-maid-arm-l,
+#pet.pet--success[data-vector="maid"] .vc-maid-arm-r {
+  animation: maid-cheer 0.55s ease-in-out infinite;
+}
+#pet.pet--editing[data-vector="maid"] .vc-maid-arm-r,
+#pet.pet--tool[data-vector="maid"] .vc-maid-arm-r,
+#pet.pet--test[data-vector="maid"] .vc-maid-arm-r {
+  animation: maid-work 0.7s ease-in-out infinite;
+}
+@keyframes maid-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+@keyframes maid-wave {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-28deg); }
+}
+@keyframes maid-cheer {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-4px) rotate(-14deg); }
+}
+@keyframes maid-work {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(14deg); }
+}
