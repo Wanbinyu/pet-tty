@@ -6,6 +6,7 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   clearScreen: false,
+  build: { rollupOptions: { input: { app: "index.html", motion: "motion-demo.html" } } },
   // @imgly/background-removal pulls ONNX / wasm — keep out of optimizeDeps
   optimizeDeps: {
     exclude: ["@imgly/background-removal"],

@@ -22,11 +22,12 @@ import {
 } from "./skins/store";
 import { applySkinToDom } from "./skins/render";
 import { getVectorCharacter } from "./skins/vector";
-import { fileToDataUrl, normalizeImport, type PixelQuality } from "./skins/pixelize";
+import { fileToDataUrl, loadImage, normalizeImport, type PixelQuality } from "./skins/pixelize";
 import { makePixelDollFromImage } from "./skins/pixel-doll";
 import * as spriteImport from "./skins/spriteImport";
 import { synthesizeSpriteFromImage } from "./skins/spriteSynth";
-import { isolateSubject } from "./skins/segment";
+import { isolateSubjectLocal } from "./skins/segment";
+import { chooseMotionRig } from "./skins/motionEditor";
 import { spritePlayer } from "./skins/spritePlayer";
 import { hideWorkProgress, setWorkProgress } from "./skins/progress";
 import type { SkinMeta } from "./skins/types";
@@ -43,6 +44,7 @@ const PET_MULTI = { w: 220, h: 480 };
 /** Expanded while context menu is open so list can scroll */
 const MENU_SIZE = { w: 250, h: 440 };
 const INSP_SIZE = { w: 360, h: 640 };
+let motionSetupOpen = false;
 
 const player = new EventPlayer();
 let latest: AgentEvent | null = null;
@@ -267,6 +269,7 @@ async function resizeTo(mode: "pet" | "menu" | "inspector") {
 }
 
 async function fitPetWindow() {
+  if (motionSetupOpen) return;
   if (menuOpen) return;
   if (!$("inspector").classList.contains("hidden")) return;
   await resizeTo("pet");
@@ -1401,16 +1404,29 @@ async function importSpriteFromImage() {
     try {
       let dataUrl = await fileToDataUrl(file);
       const name = file.name.replace(/\.[^.]+$/, "").slice(0, 24) || "Sprite";
-      // 抠图: isolate the subject so only the character animates, not the bg
+      // This path is offline by default. Never silently download a segmentation model.
       setWorkProgress(0.05, d.ui.stageIsolate);
       try {
-        dataUrl = await isolateSubject(dataUrl);
+        if (($("opt-subject") as HTMLInputElement).checked) dataUrl = await isolateSubjectLocal(dataUrl);
       } catch (e) {
         console.warn("[petdeck] subject isolation failed, using original", e);
       }
+      hideWorkProgress();
+      motionSetupOpen = true;
+      let rig;
+      try {
+        if (isTauri()) await (await win()).setSize(new LogicalSize(850, 720));
+        rig = await chooseMotionRig(await loadImage(dataUrl));
+      } finally {
+        motionSetupOpen = false;
+        if (!$("inspector").classList.contains("hidden")) await resizeTo("inspector");
+        else await fitPetWindow();
+      }
+      if (!rig) return;
       setWorkProgress(0.15, d.ui.spriteWorking);
       const skin = await synthesizeSpriteFromImage(dataUrl, name, (p) =>
         setWorkProgress(0.15 + p.ratio * 0.85, `${d.ui.spriteWorking} · ${p.label}`),
+        rig,
       );
       addCustomSkin(skin);
       setActiveSkinId(skin.id);

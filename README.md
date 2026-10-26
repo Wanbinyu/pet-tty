@@ -20,6 +20,26 @@
   <a href="#english">English</a> · <a href="#中文">中文</a> · <a href="docs/SPRITES.md">Skins / 皮肤</a>
 </p>
 
+### 单图动作实验室
+
+导入一张角色图，预览 **挥手、摆腿、压扁弹起** 等状态动作。手臂和腿部采用人工框选与关节确认；没有可用部位时自动使用整图摇摆、弹跳，不会凭空生成肢体。
+
+![单图动作实验室](docs/assets/motion-lab.png)
+
+```powershell
+npm ci
+npm run dev -- --host 127.0.0.1
+# 浏览器打开 http://127.0.0.1:1420/motion-demo.html
+```
+
+- 自带角色、无手团子、未知素材与女仆平面图，支持导入自己的图片。
+- 预览与 PNG 烘焙共用渲染器；8 个 Agent 状态、每状态 24 帧，支持逐帧检查。
+- 24 FPS 预览、暂停/后台停止绘制、切换素材释放资源。
+- 页面点击「运行验证」执行 35 项实际浏览器检查；验证时保持页面在前台。
+- `npm run demo:bundle` 导出 `dist/petdeck-motion-demo.html`，可离线双击演示。
+
+完整原理、使用流程与能力边界见 [单图动作说明](docs/single-image-motion.md)。
+
 ---
 
 ## English

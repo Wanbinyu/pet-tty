@@ -13,7 +13,7 @@ import * as spriteStore from "./spriteStore";
 
 const DEFAULT_FPS = 12;
 
-class SpritePlayer {
+export class SpritePlayer {
   private img: HTMLImageElement | null = null;
   private skinId: string | null = null;
   private manifest: SpriteManifest | null = null;
@@ -25,6 +25,7 @@ class SpritePlayer {
   private loading = false;
   private paused = false;
   private objectUrls: string[] = [];
+  private generation = 0;
 
   attach(img: HTMLImageElement) {
     this.img = img;
@@ -51,26 +52,35 @@ class SpritePlayer {
     } else {
       // imported: preload all states' blobs from IDB into object URLs
       this.loading = true;
-      void this.loadImported(skin.id);
+      void this.loadImported(skin.id, this.generation);
     }
   }
 
-  private async loadImported(skinId: string) {
+  private async loadImported(skinId: string, generation: number) {
     if (!this.manifest) return;
     const entries = Object.keys(this.manifest.states);
-    await Promise.all(
-      entries.map(async (st) => {
-        const blobs = await spriteStore.getFrames(skinId, st);
-        const urls = blobs.map((b) => {
-          const u = URL.createObjectURL(b);
-          this.objectUrls.push(u);
-          return u;
-        });
-        this.cache.set(st, urls);
-      }),
-    );
-    this.loading = false;
-    if (this.skinId === skinId) this.play();
+    try {
+      await Promise.all(
+        entries.map(async (st) => {
+          const blobs = await spriteStore.getFrames(skinId, st);
+          // A skin switch/deactivate can happen while IDB is pending. Discard stale results.
+          if (generation !== this.generation) return;
+          const urls = blobs.map((b) => {
+            const u = URL.createObjectURL(b);
+            this.objectUrls.push(u);
+            return u;
+          });
+          this.cache.set(st, urls);
+        }),
+      );
+      if (generation !== this.generation) return;
+      this.loading = false;
+      this.play();
+    } catch (error) {
+      if (generation !== this.generation) return;
+      console.warn("[petdeck] sprite frames unavailable", error);
+      this.teardown();
+    }
   }
 
   /** Switch the playing sequence to a new agent state. No-op if unchanged. */
@@ -132,6 +142,8 @@ class SpritePlayer {
         if (loop) this.idx = 0;
         else {
           this.idx = frames.length - 1;
+          if (this.timer !== null) clearInterval(this.timer);
+          this.timer = null;
           return;
         }
       }
@@ -145,6 +157,7 @@ class SpritePlayer {
   }
 
   private teardown() {
+    this.generation++;
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;

@@ -44,12 +44,16 @@ export const maid: VectorCharacter = {
 
   <!-- arms (long-sleeved, dark with white cuffs) -->
   <g class="vc-maid-arms">
-    <path class="vc-maid-arm vc-maid-arm-l" d="M33 54 Q30 64 31 74" fill="none" stroke="url(#maid-dress)" stroke-width="6.5" stroke-linecap="round"/>
-    <path class="vc-maid-arm vc-maid-arm-r" d="M67 54 Q70 64 69 74" fill="none" stroke="url(#maid-dress)" stroke-width="6.5" stroke-linecap="round"/>
+    <g class="vc-maid-arm vc-maid-arm-l">
+    <path d="M33 54 Q30 64 31 74" fill="none" stroke="url(#maid-dress)" stroke-width="6.5" stroke-linecap="round"/>
     <ellipse cx="31" cy="74" rx="4" ry="2.4" fill="#EDE9F0" stroke="#C8C2D4" stroke-width="0.8"/>
-    <ellipse cx="69" cy="74" rx="4" ry="2.4" fill="#EDE9F0" stroke="#C8C2D4" stroke-width="0.8"/>
     <circle cx="31" cy="77" r="2.8" fill="#FDDEC8"/>
+    </g>
+    <g class="vc-maid-arm vc-maid-arm-r">
+    <path d="M67 54 Q70 64 69 74" fill="none" stroke="url(#maid-dress)" stroke-width="6.5" stroke-linecap="round"/>
+    <ellipse cx="69" cy="74" rx="4" ry="2.4" fill="#EDE9F0" stroke="#C8C2D4" stroke-width="0.8"/>
     <circle cx="69" cy="77" r="2.8" fill="#FDDEC8"/>
+    </g>
   </g>
 
   <!-- neck + high lace collar + cross necklace -->

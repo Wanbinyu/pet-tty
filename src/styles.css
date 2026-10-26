@@ -1487,9 +1487,10 @@ body.mode-inspector {
 
 /* ============ Maid character (original) ============ */
 #pet[data-vector="maid"] .vc-maid-arm {
-  transform-box: fill-box;
-  transform-origin: 50% 12%;
+  transform-box: view-box;
+  transform-origin: 33px 54px;
 }
+#pet[data-vector="maid"] .vc-maid-arm-r { transform-origin: 67px 54px; }
 #pet[data-vector="maid"] .vc-maid-eye {
   transform-box: fill-box;
   transform-origin: 50% 50%;
