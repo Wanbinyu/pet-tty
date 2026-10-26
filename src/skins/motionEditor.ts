@@ -1,5 +1,6 @@
 import type { AgentState } from "../events/types";
-import { activeParts, describeMotion, EMPTY_RIG, FRAME_COUNT, MOTION_FPS, MotionRenderer, MOTION_STATES, validPart, type MotionRig, type PartSlot } from "./motion";
+import { activeParts, describeMotion, EMPTY_RIG, MOTION_CONFIG, MOTION_FPS, MotionRenderer, MOTION_STATES, validPart, type MotionPose, type MotionRig, type PartSlot } from "./motion";
+import { samplePlayback } from "./motionPlayback";
 import "./motionEditor.css";
 
 const names: Record<AgentState, string> = { idle: "待机", thinking: "思考", tool_call: "工具 / 走动", editing: "编辑", waiting_user: "等你 / 挥手", running_tests: "测试 / 小跑", success: "成功 / 弹起", error: "错误" };
@@ -16,10 +17,16 @@ export class MotionEditor {
   private preview: HTMLCanvasElement;
   private slot: HTMLSelectElement;
   private capability: HTMLSelectElement;
+  private intensity: HTMLSelectElement;
   private confirm: HTMLInputElement;
   private range: HTMLInputElement;
   private caption: HTMLElement;
   private started = performance.now();
+  private elapsedMs = 0;
+  private resting = false;
+  private renderedPose: MotionPose | null = null;
+  private transitionFrom: MotionPose | null = null;
+  private transitionStarted = 0;
   // Pause the scheduler itself, rather than waking it on every display refresh.
   private visibilityChanged = () => {
     this.stopAnimation();
@@ -28,24 +35,34 @@ export class MotionEditor {
   private tick = (now: number) => {
     this.raf = 0;
     if (this.disposed || this.paused || document.hidden) return;
-    const frame = Math.floor((now - this.started) / (1000 / MOTION_FPS)) % FRAME_COUNT;
-    if (frame !== this.frame) { this.frame = frame; this.draw(); }
+    this.elapsedMs = now - this.started;
+    const sample = samplePlayback(this.elapsedMs, MOTION_CONFIG[this.state], MOTION_CONFIG.idle);
+    const resting = sample.sequence === "idle";
+    // Transition poses also use the 24 FPS clock, even on 120 Hz displays.
+    const animationTick = Math.floor(this.elapsedMs / (1000 / MOTION_FPS));
+    if (sample.frame !== this.frame || resting !== this.resting || (this.transitionFrom && animationTick !== this.lastTick)) {
+      this.frame = sample.frame; this.resting = resting; this.draw();
+    }
+    this.lastTick = animationTick;
     this.raf = requestAnimationFrame(this.tick);
   };
   private stopAnimation() {
+    if (this.raf) this.elapsedMs = Math.max(0, performance.now() - this.started);
     cancelAnimationFrame(this.raf);
     this.raf = 0;
   }
   private startAnimation() {
     if (this.disposed || this.paused || document.hidden || this.raf) return;
-    this.started = performance.now() - this.frame / MOTION_FPS * 1000;
+    this.started = performance.now() - this.elapsedMs;
     this.raf = requestAnimationFrame(this.tick);
   }
+  private lastTick = -1;
   constructor(private root: HTMLElement, private image: HTMLImageElement, initial: MotionRig = EMPTY_RIG) {
     this.rig = structuredClone(initial);
     root.classList.add("motion-editor");
     root.innerHTML = `<div class="me-source"><div class="me-kicker">01 / 素材能力</div>
       <label>这张图能做什么？<select data-field="capability"><option value="unknown">未知 · 仅整图动作</option><option value="none">没有可用手腿 · 弹跳摇摆</option><option value="manual">手动标记 · 使用原有像素</option></select></label>
+      <label>动作强度<select data-field="intensity"><option value="gentle">轻柔 · 安静陪伴</option><option value="standard">标准 · 自然反馈</option><option value="lively">活泼 · 更明显的动作</option></select></label>
       <div class="me-source-board"><canvas data-field="source" aria-label="原图标记区域"></canvas></div>
       <div data-field="manual"><label>标记部位<select data-field="slot"><option value="arm">挥手手臂</option><option value="legLeft">左腿</option><option value="legRight">右腿</option></select></label>
       <p class="me-hint">① 拖动框选完整部位　② 点「关节」后点旋转中心</p>
@@ -53,13 +70,14 @@ export class MotionEditor {
       <label class="me-check"><input data-field="confirm" type="checkbox">我确认：区域不含躯干，关节位置正确</label></div>
       <p class="me-warning">没有自动部位识别。未知、未确认或重叠区域会降级。矩形切片不能补出被手臂遮住的身体，请选独立轮廓。</p></div>
       <div class="me-stage"><div class="me-kicker">02 / 同源动作预览</div><div class="me-preview-board"><span class="me-bubble">需要你确认一下 👋</span><canvas data-field="preview" width="360" height="480" aria-label="实时动作"></canvas><span class="me-ground"></span></div>
-      <p data-field="caption" class="me-caption" aria-live="polite"></p><div class="me-states"></div>
+      <p data-field="caption" class="me-caption" aria-live="polite"></p><p data-field="playback" class="me-playback" role="status"></p><div class="me-states"></div>
       <div class="me-row"><button type="button" data-action="pause">暂停</button><label class="me-timeline">逐帧 <input data-field="range" type="range" min="0" max="23" value="0" aria-label="动画帧"></label><span data-field="frame">1 / 24</span></div></div>`;
     const find = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
     this.source = find<HTMLCanvasElement>('[data-field="source"]');
     this.preview = find<HTMLCanvasElement>('[data-field="preview"]');
     this.slot = find<HTMLSelectElement>('[data-field="slot"]');
     this.capability = find<HTMLSelectElement>('[data-field="capability"]');
+    this.intensity = find<HTMLSelectElement>('[data-field="intensity"]');
     this.confirm = find<HTMLInputElement>('[data-field="confirm"]');
     this.range = find<HTMLInputElement>('[data-field="range"]');
     this.caption = find('[data-field="caption"]');
@@ -67,6 +85,7 @@ export class MotionEditor {
     this.source.width = Math.max(1, Math.round(image.naturalWidth * ratio));
     this.source.height = Math.max(1, Math.round(image.naturalHeight * ratio));
     this.capability.value = this.rig.capability;
+    this.intensity.value = this.rig.intensity ?? "standard";
     this.renderer = new MotionRenderer(image, this.rig);
     const states = find('.me-states');
     for (const state of MOTION_STATES) {
@@ -75,18 +94,21 @@ export class MotionEditor {
       button.onclick = () => this.setState(state); states.append(button);
     }
     this.capability.onchange = () => { this.rig.capability = this.capability.value as MotionRig["capability"]; this.update(); };
+    this.intensity.onchange = () => { this.rig.intensity = this.intensity.value as MotionRig["intensity"]; this.update(); };
     this.slot.onchange = () => { this.pivotMode = false; this.update(); };
     this.confirm.onchange = () => { const p = this.rig.parts[this.slot.value as PartSlot]; if (p) p.confirmed = this.confirm.checked; this.update(); };
     find('[data-action="pivot"]').onclick = () => { this.pivotMode = true; this.caption.textContent = "请在原图框选区域内点一下关节"; };
     find('[data-action="clear"]').onclick = () => { delete this.rig.parts[this.slot.value as PartSlot]; this.update(); };
     find('[data-action="pause"]').onclick = e => {
+      this.stopAnimation();
       this.paused = !this.paused; (e.currentTarget as HTMLElement).textContent = this.paused ? "播放" : "暂停";
-      this.stopAnimation(); this.startAnimation();
+      this.startAnimation();
     };
     this.range.oninput = () => {
       this.paused = true; find('[data-action="pause"]').textContent = "播放";
       this.stopAnimation();
-      this.frame = Number(this.range.value); this.draw();
+      this.frame = Number(this.range.value); this.resting = false; this.transitionFrom = null;
+      this.elapsedMs = this.frame / MOTION_FPS * 1000; this.draw();
     };
     const point = (e: PointerEvent) => {
       const rect = this.source.getBoundingClientRect();
@@ -116,11 +138,15 @@ export class MotionEditor {
     this.startAnimation();
   }
   setState(state: AgentState) {
-    this.state = state; this.frame = 0; this.started = performance.now();
+    this.stopAnimation();
+    this.transitionFrom = !this.paused && this.state !== state ? this.renderedPose : null;
+    this.transitionStarted = performance.now();
+    this.state = state; this.frame = 0; this.elapsedMs = 0; this.resting = false; this.lastTick = -1;
+    this.range.max = String(MOTION_CONFIG[state].frameCount - 1);
     this.root.querySelectorAll<HTMLButtonElement>('[data-state]').forEach(b => b.setAttribute("aria-pressed", String(b.dataset.state === state)));
     const bubble = this.root.querySelector<HTMLElement>('.me-bubble')!;
     bubble.textContent = `${names[state]} · ${state}`;
-    this.caption.textContent = describeMotion(state, this.rig); this.draw();
+    this.caption.textContent = describeMotion(state, this.rig); this.draw(); this.startAnimation();
   }
   private update() {
     this.renderer.dispose(); this.renderer = new MotionRenderer(this.image, this.rig);
@@ -144,9 +170,21 @@ export class MotionEditor {
     }
   }
   private draw() {
-    this.renderer.draw(this.preview, this.state, this.frame / 24);
-    this.range.value = String(this.frame);
-    this.root.querySelector<HTMLElement>('[data-field="frame"]')!.textContent = `${this.frame + 1} / 24`;
+    const state = this.resting ? "idle" : this.state;
+    const config = MOTION_CONFIG[state];
+    const progress = (performance.now() - this.transitionStarted) / 200;
+    const transition = this.transitionFrom ? { from: this.transitionFrom, progress } : undefined;
+    this.renderedPose = this.renderer.draw(this.preview, state, this.frame / (config.loop === false ? config.frameCount - 1 : config.frameCount), transition);
+    if (progress >= 1) this.transitionFrom = null;
+    this.preview.dataset.motionState = state;
+    this.preview.dataset.motionPhase = this.resting ? "idle" : "action";
+    this.range.value = String(this.resting ? MOTION_CONFIG[this.state].frameCount - 1 : this.frame);
+    this.root.querySelector<HTMLElement>('[data-field="frame"]')!.textContent = this.resting ? "呼吸待机" : `${this.frame + 1} / ${config.frameCount}`;
+    const message = this.resting
+      ? this.state === "waiting_user" ? "已收手，安静等待 · 休息 8 秒后再提醒" : "动作已完成 · 回到呼吸待机"
+      : config.returnToIdle ? this.state === "waiting_user" ? "招手后会收手休息，不持续打扰" : "播放一次后回到待机" : "循环动作 · 可暂停逐帧查看";
+    const status = this.root.querySelector<HTMLElement>('[data-field="playback"]')!;
+    if (status.textContent !== message) status.textContent = message;
   }
   dispose() {
     this.disposed = true; this.stopAnimation();

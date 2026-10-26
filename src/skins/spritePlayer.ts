@@ -1,56 +1,46 @@
-/** Singleton sprite frame player.
- *
- * Drives the `#pet-sprite` <img>: cycles PNG frames for the current agent
- * state at the manifest's fps, swaps sequences on state change, and manages
- * object URLs for imported (IndexedDB-backed) skins. Builtin skins embed
- * frames as data URLs in the manifest, so no IDB access is needed for them.
- *
- * Lifecycle: `render.applySkinToDom` calls `activate(skin)` + `setState(state)`
- * on every event; both are idempotent and cheap when nothing changed. */
+/** PNG player with a shared elapsed-time clock, one-shots and idle reminders.
+ * Visual idle never overwrites the underlying Agent task state. */
 import type { AgentState } from "../events/types";
 import type { SkinMeta, SpriteManifest, SpriteState } from "./types";
+import { samplePlayback, sequenceFps } from "./motionPlayback";
 import * as spriteStore from "./spriteStore";
-
-const DEFAULT_FPS = 12;
 
 export class SpritePlayer {
   private img: HTMLImageElement | null = null;
   private skinId: string | null = null;
   private manifest: SpriteManifest | null = null;
   private state: AgentState = "idle";
-  /** resolved frame srcs per state (data URLs for builtin, object URLs for imported) */
   private cache = new Map<string, string[]>();
-  private idx = 0;
   private timer: number | null = null;
   private loading = false;
   private paused = false;
+  private initialized = false;
   private objectUrls: string[] = [];
   private generation = 0;
+  private elapsedMs = 0;
+  private startedAt = 0;
+  private sequence: string | null = null;
+  private transition: Animation | null = null;
+  private visibilityChanged = () => {
+    if (document.hidden) { this.stopClock(); this.transition?.cancel(); }
+    else this.play();
+  };
 
-  attach(img: HTMLImageElement) {
-    this.img = img;
-  }
+  attach(img: HTMLImageElement) { this.img = img; }
 
-  /** Switch to a skin. No-op if already active. Tears down any prior skin. */
   activate(skin: SkinMeta) {
     if (this.skinId === skin.id) return;
     this.teardown();
     this.skinId = skin.id;
     this.manifest = skin.manifest ?? null;
     if (!this.manifest) return;
-
-    const hasEmbedded = Object.values(this.manifest.states).some(
-      (s) => s?.frames && s.frames.length > 0,
-    );
-    if (hasEmbedded) {
-      // builtin: frames are data URLs, ready immediately
-      for (const [st, s] of Object.entries(this.manifest.states)) {
-        if (s?.frames && s.frames.length) {
-          this.cache.set(st, s.frames.map((f) => f.src));
-        }
+    document.addEventListener("visibilitychange", this.visibilityChanged);
+    const embedded = Object.values(this.manifest.states).some(s => s?.frames?.length);
+    if (embedded) {
+      for (const [state, config] of Object.entries(this.manifest.states)) {
+        if (config?.frames?.length) this.cache.set(state, config.frames.map(f => f.src));
       }
     } else {
-      // imported: preload all states' blobs from IDB into object URLs
       this.loading = true;
       void this.loadImported(skin.id, this.generation);
     }
@@ -58,120 +48,97 @@ export class SpritePlayer {
 
   private async loadImported(skinId: string, generation: number) {
     if (!this.manifest) return;
-    const entries = Object.keys(this.manifest.states);
     try {
-      await Promise.all(
-        entries.map(async (st) => {
-          const blobs = await spriteStore.getFrames(skinId, st);
-          // A skin switch/deactivate can happen while IDB is pending. Discard stale results.
-          if (generation !== this.generation) return;
-          const urls = blobs.map((b) => {
-            const u = URL.createObjectURL(b);
-            this.objectUrls.push(u);
-            return u;
-          });
-          this.cache.set(st, urls);
-        }),
-      );
+      await Promise.all(Object.keys(this.manifest.states).map(async state => {
+        const blobs = await spriteStore.getFrames(skinId, state);
+        if (generation !== this.generation) return;
+        const urls = blobs.map(blob => { const url = URL.createObjectURL(blob); this.objectUrls.push(url); return url; });
+        this.cache.set(state, urls);
+      }));
       if (generation !== this.generation) return;
-      this.loading = false;
-      this.play();
+      this.loading = false; this.play();
     } catch (error) {
       if (generation !== this.generation) return;
-      console.warn("[petdeck] sprite frames unavailable", error);
-      this.teardown();
+      console.warn("[petdeck] sprite frames unavailable", error); this.teardown();
     }
   }
 
-  /** Switch the playing sequence to a new agent state. No-op if unchanged. */
-  setState(state: AgentState) {
-    if (this.state === state && this.timer !== null) return;
-    this.state = state;
+  /** Duplicate notifications must not replay a completed celebration.
+   * Explicit user demo clicks can pass restart=true to replay it. */
+  setState(state: AgentState, restart = false) {
+    if (this.state === state && this.initialized && !restart) return;
+    this.stopClock(); this.transition?.cancel();
+    this.state = state; this.elapsedMs = 0; this.initialized = false;
     this.play();
   }
 
-  /** Temporarily stop the frame loop (e.g. during a window drag) so it doesn't
-   *  contend with the compositor. The current frame stays visible. */
-  pause() {
-    this.paused = true;
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-  }
-
-  /** Resume the frame loop after pause(). */
+  pause() { this.stopClock(); this.paused = true; this.transition?.pause(); }
   resume() {
     if (!this.paused) return;
     this.paused = false;
+    if (this.transition?.playState === "paused") this.transition.play();
     this.play();
   }
 
   private cfgFor(state: AgentState): SpriteState | undefined {
-    if (!this.manifest) return undefined;
-    return this.manifest.states[state] ?? this.manifest.states.idle;
+    return this.cache.get(state)?.length ? this.manifest?.states[state] : this.manifest?.states.idle;
+  }
+  private framesFor(state: AgentState): string[] {
+    const exact = this.cache.get(state);
+    return exact?.length ? exact : this.cache.get("idle") ?? [];
+  }
+  private stopClock() {
+    if (this.timer === null) return;
+    this.elapsedMs += performance.now() - this.startedAt;
+    clearInterval(this.timer); this.timer = null;
   }
 
-  private framesFor(state: AgentState): string[] {
-    // exact state, else fall back to idle so every state always has frames
-    return this.cache.get(state) ?? this.cache.get("idle") ?? [];
+  private paint(elapsed: number): boolean {
+    if (!this.img) return true;
+    const actionFrames = this.framesFor(this.state);
+    if (!actionFrames.length) { this.img.removeAttribute("src"); return true; }
+    const idleFrames = this.cache.get("idle") ?? [];
+    const sample = samplePlayback(elapsed, { ...this.cfgFor(this.state), frameCount: actionFrames.length },
+      idleFrames.length ? { ...this.manifest?.states.idle, frameCount: idleFrames.length } : undefined);
+    const effectiveState = sample.sequence === "idle" || !this.cache.get(this.state)?.length ? "idle" : this.state;
+    const frames = sample.sequence === "idle" ? idleFrames : actionFrames;
+    const source = frames[sample.frame];
+    const hadFrame = !!this.img.getAttribute("src");
+    if (this.img.getAttribute("src") !== source) this.img.src = source;
+    this.img.dataset.motionState = effectiveState;
+    this.img.dataset.motionPhase = sample.sequence;
+    if (this.sequence !== effectiveState) {
+      this.transition?.cancel();
+      if (hadFrame && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        this.transition = this.img.animate([{ opacity: .45 }, { opacity: 1 }], { duration: 180, easing: "ease-out" });
+      }
+      this.sequence = effectiveState;
+    }
+    return sample.finished;
   }
 
   private play() {
-    if (this.paused) return;
-    if (!this.img || !this.skinId || this.loading) return;
-    const frames = this.framesFor(this.state);
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    if (!frames.length) {
-      this.img.removeAttribute("src");
-      return;
-    }
-    this.idx = 0;
-    this.img.src = frames[0];
-    if (frames.length === 1) return; // static
-    const cfg = this.cfgFor(this.state);
-    const fps = cfg?.fps ?? DEFAULT_FPS;
-    const loop = cfg?.loop ?? true;
-    const interval = Math.max(16, Math.round(1000 / fps));
+    if (this.paused || document.hidden || this.loading || !this.img || !this.skinId || this.timer !== null) return;
+    this.initialized = true; this.startedAt = performance.now();
+    if (this.paint(this.elapsedMs)) return;
+    const fps = Math.max(sequenceFps({ ...this.cfgFor(this.state), frameCount: 1 }),
+      sequenceFps({ ...this.manifest?.states.idle, frameCount: 1 }));
     this.timer = window.setInterval(() => {
-      this.idx++;
-      if (this.idx >= frames.length) {
-        if (loop) this.idx = 0;
-        else {
-          this.idx = frames.length - 1;
-          if (this.timer !== null) clearInterval(this.timer);
-          this.timer = null;
-          return;
-        }
-      }
-      if (this.img) this.img.src = frames[this.idx];
-    }, interval);
+      if (this.paint(this.elapsedMs + performance.now() - this.startedAt)) this.stopClock();
+    }, Math.max(16, Math.round(1000 / fps)));
   }
 
-  /** Stop playing and release all resources (called when leaving a sprite skin). */
-  deactivate() {
-    this.teardown();
-  }
-
+  deactivate() { this.teardown(); }
   private teardown() {
-    this.generation++;
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
+    this.generation++; this.stopClock(); this.transition?.cancel(); this.transition = null;
+    document.removeEventListener("visibilitychange", this.visibilityChanged);
+    this.objectUrls.forEach(url => URL.revokeObjectURL(url)); this.objectUrls = [];
+    this.cache.clear(); this.skinId = null; this.manifest = null;
+    this.loading = false; this.paused = false; this.initialized = false;
+    this.elapsedMs = 0; this.sequence = null;
+    if (this.img) {
+      this.img.removeAttribute("src"); delete this.img.dataset.motionState; delete this.img.dataset.motionPhase;
     }
-    this.objectUrls.forEach((u) => URL.revokeObjectURL(u));
-    this.objectUrls = [];
-    this.cache.clear();
-    this.skinId = null;
-    this.manifest = null;
-    this.loading = false;
-    this.paused = false;
-    this.idx = 0;
-    if (this.img) this.img.removeAttribute("src");
   }
 }
-
 export const spritePlayer = new SpritePlayer();

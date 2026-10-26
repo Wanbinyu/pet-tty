@@ -3,7 +3,7 @@
 import type { SkinMeta, SpriteState } from "./types";
 import { loadImage } from "./pixelize";
 import * as spriteStore from "./spriteStore";
-import { EMPTY_RIG, FRAME_COUNT, MOTION_FPS, MOTION_STATES, MotionRenderer, type MotionRig } from "./motion";
+import { EMPTY_RIG, MOTION_CONFIG, MOTION_STATES, TOTAL_MOTION_FRAMES, MotionRenderer, type MotionRig } from "./motion";
 
 export interface SynthProgress { ratio: number; label: string }
 
@@ -19,20 +19,22 @@ export async function synthesizeSpriteFromImage(
   let done = 0;
   try {
     for (const state of MOTION_STATES) {
+      const config = MOTION_CONFIG[state];
       // toBlob snapshots the bitmap at invocation. Queue one state's encodes
       // together so background-tab idle scheduling cannot add one delay per frame.
       const encodes: Promise<Blob>[] = [];
-      for (let i = 0; i < FRAME_COUNT; i++) {
-        renderer.draw(canvas, state, i / FRAME_COUNT);
+      for (let i = 0; i < config.frameCount; i++) {
+        // One-shots include their neutral end pose; loops avoid duplicate endpoints.
+        renderer.draw(canvas, state, i / (config.loop === false ? config.frameCount - 1 : config.frameCount));
         encodes.push(new Promise<Blob>((resolve, reject) => canvas.toBlob(b => {
           if (!b) { reject(new Error("PNG encoding failed")); return; }
-          onProgress?.({ ratio: ++done / (MOTION_STATES.length * FRAME_COUNT), label: `${state} ${done}/192` });
+          onProgress?.({ ratio: ++done / TOTAL_MOTION_FRAMES, label: `${state} ${done}/${TOTAL_MOTION_FRAMES}` });
           resolve(b);
         }, "image/png")));
       }
       const blobs = await Promise.all(encodes);
       await spriteStore.saveFrames(skinId, state, blobs);
-      states[state] = { frameCount: FRAME_COUNT, fps: MOTION_FPS, loop: true };
+      states[state] = { ...config };
     }
     return { id: skinId, nameEn: name, nameZh: name, kind: "sprite", builtin: false,
       manifest: { states }, createdAt: new Date().toISOString() };

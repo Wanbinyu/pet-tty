@@ -22,6 +22,10 @@ export interface SpriteState {
   fps?: number;
   /** loop the sequence; default true */
   loop?: boolean;
+  /** Visual fallback only: does not change the underlying Agent state. */
+  returnToIdle?: boolean;
+  /** After a one-shot, breathe in idle before reminding again (milliseconds). */
+  repeatAfterMs?: number;
 }
 export interface SpriteManifest {
   /** per agent state (AgentState values as keys); states without an entry

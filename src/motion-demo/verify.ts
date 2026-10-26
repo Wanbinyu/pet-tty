@@ -1,4 +1,5 @@
-import { activeParts, describeMotion, EMPTY_RIG, motionFor, MotionRenderer, MOTION_STATES, partAngle, validPart } from "../skins/motion";
+import { activeParts, blendPose, describeMotion, EMPTY_RIG, motionFor, MotionRenderer, MOTION_CONFIG, MOTION_STATES, TOTAL_MOTION_FRAMES, partAngle, poseFor, validPart } from "../skins/motion";
+import { samplePlayback } from "../skins/motionPlayback";
 import { loadImage } from "../skins/pixelize";
 import { synthesizeSpriteFromImage } from "../skins/spriteSynth";
 import { SpritePlayer } from "../skins/spritePlayer";
@@ -33,6 +34,18 @@ export async function runMotionChecks(onProgress?: (message: string) => void): P
   check(activeParts({ capability: 'manual', parts: { arm: sampleRig.parts.arm, legLeft: sampleRig.parts.arm } }).length === 0, '重叠切片被拒绝');
   check(partAngle('legLeft', 'tool_call', .125) === -partAngle('legRight', 'tool_call', .125), '左右腿相位相反');
   check(!describeMotion('waiting_user', EMPTY_RIG).includes('局部挥手'), '降级描述不冒充挥手');
+  check(partAngle('arm', 'waiting_user', 0) === 0 && partAngle('arm', 'waiting_user', 1) === 0, '挥手从自然下垂开始，并完整收手');
+  check(partAngle('arm', 'waiting_user', .2) < -40 && partAngle('arm', 'waiting_user', .9) > -25, '挥手包含抬手与收手过程');
+  const gentle = poseFor('success', .5, 'gentle');
+  const standard = poseFor('success', .5);
+  check(Math.abs(gentle.dy) < Math.abs(standard.dy) && Math.abs(standard.dy) < Math.abs(poseFor('success', .5, 'lively').dy), '三档强度改变动作幅度');
+  const from = poseFor('thinking', .25); const to = poseFor('idle', 0);
+  check(blendPose(from, to, 0).rot === from.rot && Math.abs(blendPose(from, to, 1).rot - to.rot) < 1e-6, '姿态过渡起点与终点连续');
+  check(samplePlayback(1500, MOTION_CONFIG.success, MOTION_CONFIG.idle).sequence === 'idle', '成功动作 1.5 秒后进入待机');
+  check(samplePlayback(1000, MOTION_CONFIG.error, MOTION_CONFIG.idle).sequence === 'idle', '错误动作 1 秒后进入待机');
+  check(samplePlayback(9999, MOTION_CONFIG.waiting_user, MOTION_CONFIG.idle).sequence === 'idle'
+    && samplePlayback(10000, MOTION_CONFIG.waiting_user, MOTION_CONFIG.idle).sequence === 'action', '等待动作收手休息 8 秒后才再次提醒');
+  check(samplePlayback(9999, { frameCount: 3, fps: 12, loop: false }).frame === 2, '旧版非循环素材仍停留在末帧');
   const canvas = document.createElement('canvas'); canvas.width = 180; canvas.height = 240;
   const noHandRenderer = new MotionRenderer(await loadImage(svgUrl(noHands)), { capability: 'none', parts: {} });
   try {
@@ -48,6 +61,9 @@ export async function runMotionChecks(onProgress?: (message: string) => void): P
   applySkinToDom(host, defaultSkin, 'waiting_user');
   check(host.dataset.vector === 'maid' && host.classList.contains('pet--wait'), '默认女仆：Agent 状态映射到真实 SVG');
   check(host.querySelector('.vc-maid-arm-r')?.querySelectorAll('path,ellipse,circle').length === 3, '女仆：袖子、袖口、手掌一起旋转');
+  const arm = host.querySelector('.vc-maid-arm-r');
+  applySkinToDom(host, defaultSkin, 'waiting_user');
+  check(host.querySelector('.vc-maid-arm-r') === arm, '重复 Agent 事件保留 SVG 节点，不反复重启动作');
 
   // Exercise the actual editor lifecycle, including the costly Canvas draw path.
   const editorHost = document.createElement('div');
@@ -56,9 +72,9 @@ export async function runMotionChecks(onProgress?: (message: string) => void): P
   const originalDraw = MotionRenderer.prototype.draw;
   const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden');
   let draws = 0;
-  MotionRenderer.prototype.draw = function (target, state, t) {
+  MotionRenderer.prototype.draw = function (target, state, t, transition) {
     if (target === preview) draws++;
-    return originalDraw.call(this, target, state, t);
+    return originalDraw.call(this, target, state, t, transition);
   };
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   try {
@@ -76,6 +92,12 @@ export async function runMotionChecks(onProgress?: (message: string) => void): P
     document.dispatchEvent(new Event('visibilitychange'));
     await wait(120);
     check(draws > 0, '回到前台后恢复动画');
+    editorHost.querySelector<HTMLSelectElement>('[data-field="intensity"]')!.value = 'gentle';
+    editorHost.querySelector('[data-field="intensity"]')!.dispatchEvent(new Event('change'));
+    check(editor.rig.intensity === 'gentle', '动作编辑器保存强度设置');
+    editor.setState('success');
+    await waitUntil(() => preview.dataset.motionState === 'idle');
+    check(editor.state === 'success' && preview.dataset.motionPhase === 'idle', '预览播完成功后待机，保留原始 Agent 状态');
     editor.dispose(); draws = 0; await wait(120);
     document.dispatchEvent(new Event('visibilitychange'));
     await wait(80);
@@ -95,7 +117,7 @@ export async function runMotionChecks(onProgress?: (message: string) => void): P
   let skin: SkinMeta | null = null;
   try {
     skin = await synthesizeSpriteFromImage(svgUrl(astronaut), 'QA 临时素材', p => onProgress?.(`${results.join('\n')}\n正在烘焙验证帧：${p.label}`), sampleRig);
-    check(Object.keys(skin.manifest!.states).length === 8 && Object.values(skin.manifest!.states).every(s => s?.frameCount === 24), '实际烘焙：8 状态 × 24 帧');
+    check(Object.keys(skin.manifest!.states).length === 8 && MOTION_STATES.every(state => skin!.manifest!.states[state]?.frameCount === MOTION_CONFIG[state].frameCount), `实际烘焙：8 状态 / ${TOTAL_MOTION_FRAMES} 帧，按动作节奏分配`);
     const frames = await store.getFrames(skin.id, 'waiting_user');
     const first = new Uint8Array(await frames[0].arrayBuffer());
     const middle = new Uint8Array(await frames[12].arrayBuffer());
@@ -105,12 +127,40 @@ export async function runMotionChecks(onProgress?: (message: string) => void): P
     const rgba = canvas.getContext('2d')!.getImageData(0, 0, 180, 240).data;
     check(frames[0].type === 'image/png' && rgba[3] === 0 && rgba.some((v, i) => i % 4 === 3 && v === 255), 'PNG alpha：背景透明、角色不透明');
     player.activate(skin); player.setState('waiting_user');
-    await waitUntil(() => urls.size === 192 && !!img.getAttribute('src'));
+    await waitUntil(() => urls.size === TOTAL_MOTION_FRAMES && !!img.getAttribute('src'));
     check(img.src.startsWith('blob:'), '播放器实际读取 IndexedDB 帧');
     player.pause(); const frozen = img.src;
     await new Promise(resolve => setTimeout(resolve, 100)); check(img.src === frozen, '暂停后帧保持不变');
     player.setState('success'); player.resume();
     check(img.src !== frozen, '暂停期间切状态、恢复后进入成功帧');
+    await waitUntil(() => img.dataset.motionState === 'idle');
+    check(img.dataset.motionPhase === 'idle', 'PNG 播放器成功后切回真实 idle 帧');
+    player.setState('success');
+    check(img.dataset.motionState === 'idle', '重复成功通知不会再次庆祝');
+    player.setState('success', true);
+    check(img.dataset.motionState === 'success', '用户可以明确重播一次动作');
+    const quick: SkinMeta = { id: 'qa-timing', nameEn: 'QA', nameZh: 'QA', kind: 'sprite', builtin: true,
+      manifest: { states: {
+        idle: { frames: [{ src: svgUrl(noHands) }, { src: svgUrl(astronaut) }], fps: 60 },
+        waiting_user: { frames: [{ src: svgUrl(astronaut) }, { src: svgUrl(noHands) }], fps: 60,
+          loop: false, returnToIdle: true, repeatAfterMs: 1000 },
+        error: { frames: [{ src: svgUrl(astronaut) }, { src: svgUrl(noHands) }], fps: 10, loop: false },
+      } } };
+    player.activate(quick); player.setState('waiting_user');
+    await waitUntil(() => img.dataset.motionPhase === 'idle');
+    player.pause(); const paused = img.src;
+    await wait(120);
+    check(img.src === paused, '提醒休息期间暂停，帧与提醒时钟均冻结');
+    player.resume();
+    await waitUntil(() => img.dataset.motionPhase === 'action');
+    check(img.dataset.motionState === 'waiting_user', '真实播放器休息后可以再次提醒');
+    player.setState('error');
+    await wait(100); player.pause(); const midFrame = img.src;
+    player.resume();
+    check(img.src === midFrame, '普通动画暂停恢复保持当前进度，不从头重播');
+    await wait(180);
+    const lastFrame = img.src; player.setState('error');
+    check(img.src === lastFrame, '旧版非循环素材结束后，重复事件不重置末帧');
     const embedded: SkinMeta = { id: 'qa-embedded', nameEn: 'QA', nameZh: 'QA', kind: 'sprite', builtin: true,
       manifest: { states: { idle: { frames: [{ src: svgUrl(noHands) }], fps: 1 } } } };
     player.activate(embedded); player.setState('error');

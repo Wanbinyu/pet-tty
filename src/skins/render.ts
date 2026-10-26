@@ -51,7 +51,11 @@ export function applySkinToDom(
     hideAllLayers();
     if (vc) {
       vectorBox.classList.remove("hidden");
-      vectorBox.innerHTML = vc.svg;
+      // Repeated tool events must not replace the SVG and restart every animation.
+      if (vectorBox.dataset.character !== skin.vectorId || !vectorBox.childElementCount) {
+        vectorBox.innerHTML = vc.svg;
+        vectorBox.dataset.character = skin.vectorId;
+      }
     }
   } else if (skin.kind === "image" && skin.imageDataUrl && img && cssBody) {
     hideAllLayers();

@@ -17,6 +17,7 @@
 .me-bubble { position:absolute; top:34px; background:white; padding:10px 17px; border-radius:12px; color:#567166; box-shadow:0 7px 20px #254c3210; font-size:12px; }
 .me-ground { position:absolute; bottom:9px; width:140px; height:13px; border-radius:50%; background:#59795a24; }
 .me-caption { font-size:13px; font-weight:600; min-height:42px; margin:14px 0 9px; }
+.me-playback { font-size:12px; color:#58766b; background:#edf4ed; border-radius:8px; padding:9px 12px; margin:0 0 12px; }
 .me-states { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:15px; }
 .me-states button { font-size:11px; padding:8px 3px; }
 .me-timeline { flex:1; display:flex!important; align-items:center; gap:8px; font-size:11px; white-space:nowrap; }

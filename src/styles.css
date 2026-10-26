@@ -1328,15 +1328,16 @@ body.mode-inspector {
 /* Whole-character animation per state (shared across vector chars). */
 #pet[data-skin-kind="vector"] .pet-vector {
   animation: vc-bob 2.8s ease-in-out infinite;
+  transform-origin: 50% 100%;
 }
 #pet.pet--thinking[data-skin-kind="vector"] .pet-vector {
   animation: vc-think 2.2s ease-in-out infinite;
 }
 #pet.pet--success[data-skin-kind="vector"] .pet-vector {
-  animation: vc-hop 0.55s ease-in-out infinite;
+  animation: vc-hop 1.2s ease-in-out 1, vc-bob 2.8s ease-in-out 1.2s infinite;
 }
 #pet.pet--error[data-skin-kind="vector"] .pet-vector {
-  animation: vc-shake 0.35s linear infinite;
+  animation: vc-shake 0.6s ease-out 1, vc-bob 2.8s ease-in-out 0.6s infinite;
 }
 #pet.pet--editing[data-skin-kind="vector"] .pet-vector,
 #pet.pet--tool[data-skin-kind="vector"] .pet-vector,
@@ -1357,12 +1358,16 @@ body.mode-inspector {
 }
 @keyframes vc-hop {
   0%, 100% { transform: translateY(0) scale(1); }
-  40%, 60% { transform: translateY(-9px) scale(1.06); }
+  15% { transform: translateY(0) scale(1.1, .9); }
+  50% { transform: translateY(-12px) scale(.97, 1.03); }
+  85% { transform: translateY(0) scale(1.06, .94); }
 }
 @keyframes vc-shake {
   0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-3px); }
-  75% { transform: translateX(3px); }
+  15% { transform: translateX(-3px); }
+  35% { transform: translateX(2px); }
+  55% { transform: translateX(-1px); }
+  75% { transform: translateX(.5px); }
 }
 @keyframes vc-work {
   0%, 100% { transform: translateY(0) rotate(-2deg); }
@@ -1497,11 +1502,11 @@ body.mode-inspector {
   animation: maid-blink 5.5s ease-in-out infinite;
 }
 #pet.pet--wait[data-vector="maid"] .vc-maid-arm-r {
-  animation: maid-wave 0.55s ease-in-out infinite;
+  animation: maid-wave 10s ease-in-out infinite;
 }
 #pet.pet--success[data-vector="maid"] .vc-maid-arm-l,
 #pet.pet--success[data-vector="maid"] .vc-maid-arm-r {
-  animation: maid-cheer 0.55s ease-in-out infinite;
+  animation: maid-cheer 1.2s ease-in-out 1;
 }
 #pet.pet--editing[data-vector="maid"] .vc-maid-arm-r,
 #pet.pet--tool[data-vector="maid"] .vc-maid-arm-r,
@@ -1513,8 +1518,9 @@ body.mode-inspector {
   95% { transform: scaleY(0.1); }
 }
 @keyframes maid-wave {
-  0%, 100% { transform: rotate(0deg); }
-  50% { transform: rotate(-28deg); }
+  0%, 20%, 100% { transform: rotate(0deg); }
+  4%, 10%, 16% { transform: rotate(-35deg); }
+  7%, 13% { transform: rotate(-55deg); }
 }
 @keyframes maid-cheer {
   0%, 100% { transform: translateY(0) rotate(0deg); }
